@@ -1,0 +1,58 @@
+# =============================================================================
+# Application-root .htaccess
+#
+# This file exists because the app was deployed to shared hosting where the
+# document root could not be pointed at backend/public. It forwards requests
+# into public/ instead.
+#
+# The catch: the rewrite below only fires for paths that DO NOT already exist
+# on disk (!-f / !-d). Anything that does exist is served straight off the
+# filesystem — which, with this directory as the web root, meant `.env` and
+# `storage/app/private/prescriptions/*.pdf` were both publicly fetchable.
+#
+# The deny rules therefore come FIRST and are the important part of this file.
+#
+# Better still: point the document root at backend/public and delete this file.
+# Then none of the below is reachable in the first place.
+# =============================================================================
+
+# --- Never serve dotfiles (.env, .git, .htpasswd) ----------------------------
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Belt and braces: some hosts do not apply FilesMatch to every request path.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Block dotfiles and dotdirs anywhere in the path.
+    RewriteRule (^|/)\. - [F,L]
+
+    # Block the framework internals. `storage` holds prescription files, which
+    # are medical records, and logs, which contain request detail.
+    RewriteRule ^(storage|bootstrap|config|database|routes|resources|tests|vendor|app)(/|$) - [F,L]
+
+    # Block anything that is plainly not meant to be fetched.
+    RewriteRule \.(env|log|sql|sqlite|ini|bak|yml|yaml|lock|json)$ - [F,L]
+    RewriteRule ^(artisan|composer\.(json|lock)|package(-lock)?\.json|phpunit\.xml)$ - [F,L]
+</IfModule>
+
+# --- Forward everything else into public/ ------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteRule ^$ public/index.php [L]
+
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^(.*)$ public/$1 [L,QSA]
+</IfModule>
+
+# --- Do not advertise the directory listing ----------------------------------
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>

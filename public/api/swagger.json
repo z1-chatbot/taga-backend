@@ -1,0 +1,557 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Hair Ecommerce API",
+    "description": "Complete REST API for Hair Ecommerce Backend System with automation controls, discount management, inventory automation, and Paystack integration",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Hair Ecommerce API Support"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8000/api/v1",
+      "description": "Local Development Server"
+    },
+    {
+      "url": "http://127.0.0.1:8000/api",
+      "description": "Root API Server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "email": {"type": "string"},
+          "role": {"type": "string", "enum": ["admin", "customer"]},
+          "created_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "price": {"type": "number", "format": "float"},
+          "sale_price": {"type": "number", "format": "float"},
+          "hair_type": {"type": "string", "enum": ["human", "synthetic", "blend"]},
+          "hair_length": {"type": "string"},
+          "hair_color": {"type": "string"},
+          "hair_texture": {"type": "string", "enum": ["straight", "wavy", "curly", "kinky"]},
+          "stock_quantity": {"type": "integer"},
+          "is_featured": {"type": "boolean"},
+          "images": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email": {"type": "string", "format": "email"},
+          "password": {"type": "string", "minLength": 8}
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": ["name", "email", "password", "password_confirmation"],
+        "properties": {
+          "name": {"type": "string"},
+          "email": {"type": "string", "format": "email"},
+          "password": {"type": "string", "minLength": 8},
+          "password_confirmation": {"type": "string"}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/register": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Register new user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/RegisterRequest"},
+              "example": {
+                "name": "John Doe",
+                "email": "john@example.com",
+                "password": "password123",
+                "password_confirmation": "password123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {"type": "boolean"},
+                    "message": {"type": "string"},
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user": {"$ref": "#/components/schemas/User"},
+                        "token": {"type": "string"},
+                        "token_type": {"type": "string"}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Login user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/LoginRequest"},
+              "examples": {
+                "admin": {
+                  "summary": "Admin Login",
+                  "value": {
+                    "email": "admin@hairlux.com",
+                    "password": "password123"
+                  }
+                },
+                "customer": {
+                  "summary": "Customer Login",
+                  "value": {
+                    "email": "customer1@example.com",
+                    "password": "password123"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {"type": "boolean"},
+                    "message": {"type": "string"},
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user": {"$ref": "#/components/schemas/User"},
+                        "token": {"type": "string"},
+                        "token_type": {"type": "string"}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Logout user",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "Logged out successfully"
+          }
+        }
+      }
+    },
+    "/products": {
+      "get": {
+        "tags": ["Products"],
+        "summary": "Get all products",
+        "parameters": [
+          {
+            "name": "hair_type",
+            "in": "query",
+            "schema": {"type": "string", "enum": ["human", "synthetic", "blend"]}
+          },
+          {
+            "name": "hair_length",
+            "in": "query",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "hair_color",
+            "in": "query",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "hair_texture",
+            "in": "query",
+            "schema": {"type": "string", "enum": ["straight", "wavy", "curly", "kinky"]}
+          },
+          {
+            "name": "category_id",
+            "in": "query",
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "min_price",
+            "in": "query",
+            "schema": {"type": "number"}
+          },
+          {
+            "name": "max_price",
+            "in": "query",
+            "schema": {"type": "number"}
+          },
+          {
+            "name": "featured",
+            "in": "query",
+            "schema": {"type": "boolean"}
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "schema": {"type": "string", "enum": ["price_low_high", "price_high_low", "name_asc", "name_desc", "newest", "oldest"]}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Products retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {"type": "boolean"},
+                    "data": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/Product"}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{id}": {
+      "get": {
+        "tags": ["Products"],
+        "summary": "Get single product",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product retrieved successfully"
+          }
+        }
+      }
+    },
+    "/categories": {
+      "get": {
+        "tags": ["Categories"],
+        "summary": "Get all categories",
+        "responses": {
+          "200": {
+            "description": "Categories retrieved successfully"
+          }
+        }
+      }
+    },
+    "/cart": {
+      "get": {
+        "tags": ["Cart"],
+        "summary": "Get cart items",
+        "responses": {
+          "200": {
+            "description": "Cart items retrieved successfully"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Cart"],
+        "summary": "Add item to cart",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["product_id", "quantity"],
+                "properties": {
+                  "product_id": {"type": "integer"},
+                  "quantity": {"type": "integer", "minimum": 1}
+                }
+              },
+              "example": {
+                "product_id": 1,
+                "quantity": 2
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Item added to cart successfully"
+          }
+        }
+      }
+    },
+    "/orders": {
+      "get": {
+        "tags": ["Orders"],
+        "summary": "Get user orders",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "Orders retrieved successfully"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Orders"],
+        "summary": "Create new order",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shipping_address": {"type": "object"},
+                  "billing_address": {"type": "object"},
+                  "payment_method": {"type": "string"},
+                  "coupon_code": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Order created successfully"
+          }
+        }
+      }
+    },
+    "/payments/initialize": {
+      "post": {
+        "tags": ["Payments"],
+        "summary": "Initialize payment",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["order_id"],
+                "properties": {
+                  "order_id": {"type": "integer"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment initialized successfully"
+          }
+        }
+      }
+    },
+    "/admin/dashboard/overview": {
+      "get": {
+        "tags": ["Admin - Dashboard"],
+        "summary": "Get dashboard overview",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "Dashboard data retrieved successfully"
+          }
+        }
+      }
+    },
+    "/admin/automation/status": {
+      "get": {
+        "tags": ["Admin - Automation"],
+        "summary": "Get automation status",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "Automation status retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {"type": "boolean"},
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "sales_automation": {"type": "boolean"},
+                        "inventory_automation": {"type": "boolean"},
+                        "holiday_sales": {
+                          "type": "object",
+                          "properties": {
+                            "black_friday": {"type": "boolean"},
+                            "cyber_monday": {"type": "boolean"},
+                            "new_year": {"type": "boolean"},
+                            "valentines": {"type": "boolean"},
+                            "mothers_day": {"type": "boolean"}
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/automation/holiday/{holiday}": {
+      "put": {
+        "tags": ["Admin - Automation"],
+        "summary": "Update holiday automation settings",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {
+            "name": "holiday",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string", "enum": ["black_friday", "cyber_monday", "new_year", "valentines", "mothers_day"]}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {"type": "boolean"},
+                  "discount_percentage": {"type": "number", "minimum": 0, "maximum": 100},
+                  "duration_days": {"type": "integer", "minimum": 1, "maximum": 30},
+                  "minimum_purchase": {"type": "number", "minimum": 0},
+                  "banner_text": {"type": "string"}
+                }
+              },
+              "example": {
+                "enabled": true,
+                "discount_percentage": 60,
+                "duration_days": 5,
+                "minimum_purchase": 50,
+                "banner_text": "BLACK FRIDAY: 60% OFF EVERYTHING!"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Holiday settings updated successfully"
+          }
+        }
+      }
+    },
+    "/admin/coupons": {
+      "get": {
+        "tags": ["Admin - Coupons"],
+        "summary": "Get all coupons",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Coupons retrieved successfully"}
+        }
+      },
+      "post": {
+        "tags": ["Admin - Coupons"],
+        "summary": "Create new coupon",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "201": {"description": "Coupon created successfully"}
+        }
+      }
+    },
+    "/admin/sale-events": {
+      "get": {
+        "tags": ["Admin - Sales"],
+        "summary": "Get all sale events",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Sale events retrieved"}
+        }
+      }
+    },
+    "/admin/automation/settings": {
+      "get": {
+        "tags": ["Admin - Automation"],
+        "summary": "Get all automation settings",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Settings retrieved"}
+        }
+      }
+    },
+    "/wishlist": {
+      "get": {
+        "tags": ["Wishlist"],
+        "summary": "Get wishlist items",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Wishlist retrieved"}
+        }
+      }
+    },
+    "/sales/active": {
+      "get": {
+        "tags": ["Sales"],
+        "summary": "Get active sales",
+        "responses": {
+          "200": {"description": "Active sales retrieved"}
+        }
+      }
+    }
+  },
+  "tags": [
+    {"name": "Authentication", "description": "User authentication endpoints"},
+    {"name": "Products", "description": "Product management endpoints"},
+    {"name": "Categories", "description": "Category management endpoints"},
+    {"name": "Cart", "description": "Shopping cart endpoints"},
+    {"name": "Orders", "description": "Order management endpoints"},
+    {"name": "Payments", "description": "Payment processing endpoints"},
+    {"name": "Admin - Dashboard", "description": "Admin dashboard endpoints"},
+    {"name": "Admin - Automation", "description": "Automation control endpoints"},
+    {"name": "Admin - Coupons", "description": "Coupon management endpoints"}
+  ]
+}
