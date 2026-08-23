@@ -50,7 +50,7 @@ class PharmacyPolicy
     /**
      * How long an uploaded prescription stays valid when the customer does not
      * supply an explicit expiry date. Jurisdictions differ; 6 months is a common
-     * default for a repeatable script.
+     * default for a repeatable prescription.
      */
     public static function prescriptionValidityDays(): int
     {

@@ -12,4 +12,4 @@ If you did not create a Taga account, ignore this email — nothing will be set 
 
 Questions? Reply to this email, or write to support@taga.ng.
 
-Taga is a marketplace for licensed Nigerian pharmacies. {{ date('Y') }}
+Taga is a platform for licensed Nigerian pharmacies. {{ date('Y') }}

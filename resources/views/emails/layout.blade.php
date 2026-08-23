@@ -113,7 +113,7 @@
                                 <a href="mailto:support@taga.ng" style="color:{{ S::INK }}; text-decoration:underline;">support@taga.ng</a>.
                             </p>
                             <p style="{!! S::SMALL !!} margin-bottom:0;">
-                                Taga is a marketplace for licensed Nigerian pharmacies. {{ now()->year }}
+                                Taga is a platform for licensed Nigerian pharmacies. {{ now()->year }}
                             </p>
                         </td>
                     </tr>

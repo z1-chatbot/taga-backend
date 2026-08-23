@@ -2,9 +2,9 @@ Welcome to Taga
 
 Hello {{ $user->name }},
 
-Taga is a marketplace for licensed Nigerian pharmacies. Every store is verified
-against its premises licence before it can list anything, and prescription items
-are released only after a pharmacist has reviewed the script.
+Taga is a platform for licensed Nigerian pharmacies. Every store is verified
+against its premises licence before it can list anything, and a pharmacist reviews
+your prescription before any prescription-only medicine is released.
 @if($couponCode)
 
 Your welcome code: {{ $couponCode }}

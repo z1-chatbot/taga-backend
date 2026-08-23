@@ -26,17 +26,31 @@ class PrescriptionController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            // Images or PDFs only, max 10MB — a phone photo of a script is the norm.
+            // Images or PDFs only, max 10MB — a phone photo of a prescription is the norm.
             'file' => 'required|file|mimes:jpg,jpeg,png,webp,pdf|max:10240',
             'store_id' => 'nullable|exists:stores,id',
             'order_id' => 'nullable|exists:orders,id',
             'patient_name' => 'nullable|string|max:255',
             'doctor_name' => 'nullable|string|max:255',
             'doctor_license' => 'nullable|string|max:100',
+            // Contact details for the prescriber, so a reviewing pharmacist can
+            // verify the prescription at source rather than only on its face.
+            'doctor_email' => 'nullable|email|max:255',
+            'doctor_phone' => 'nullable|string|max:32',
             'hospital_name' => 'nullable|string|max:255',
             'issued_date' => 'nullable|date|before_or_equal:today',
             'expires_at' => 'nullable|date|after:today',
             'notes' => 'nullable|string|max:2000',
+        ], [], [
+            // The form labels these "Prescriber", so the validation errors have
+            // to as well — "The doctor email field must be a valid email
+            // address" points at a field the shopper cannot see by that name.
+            'doctor_name' => 'prescriber',
+            'doctor_license' => 'prescriber licence',
+            'doctor_email' => "prescriber's email",
+            'doctor_phone' => "prescriber's phone",
+            'hospital_name' => 'hospital or clinic',
+            'issued_date' => 'date issued',
         ]);
 
         $file = $request->file('file');
@@ -48,7 +62,7 @@ class PrescriptionController extends Controller
         $attributes = collect($validated)->except('file')->toArray();
 
         // Fall back to the configured validity window when the customer did not
-        // state an expiry, so a script cannot be reused indefinitely.
+        // state an expiry, so a prescription cannot be reused indefinitely.
         if (empty($attributes['expires_at'])) {
             $validity = \App\Support\PharmacyPolicy::prescriptionValidityDays();
 
@@ -209,6 +223,8 @@ class PrescriptionController extends Controller
             $query->where(function ($q) use ($search) {
                 $q->where('patient_name', 'like', "%{$search}%")
                     ->orWhere('doctor_name', 'like', "%{$search}%")
+                    ->orWhere('doctor_email', 'like', "%{$search}%")
+                    ->orWhere('doctor_phone', 'like', "%{$search}%")
                     ->orWhere('original_filename', 'like', "%{$search}%");
             });
         }
@@ -255,7 +271,7 @@ class PrescriptionController extends Controller
             ], 403);
         }
 
-        // Re-reviewing an already-decided script would silently overwrite an audit
+        // Re-reviewing an already-decided prescription would silently overwrite an audit
         // trail, so a store reviewer can never flip a decision. A platform admin may
         // overturn one (if policy allows) because genuine mistakes need an escalation
         // path — and that override is recorded rather than applied silently.
@@ -345,11 +361,11 @@ class PrescriptionController extends Controller
      * Cancels an order whose prescription was refused, and releases its stock.
      *
      * Under the pay-now flow the customer has already been charged by the time a
-     * pharmacist looks at the script, so a rejection has to unwind the order.
+     * pharmacist looks at the prescription, so a rejection has to unwind the order.
      *
      * The money is deliberately not moved here. Returning funds is an
      * irreversible action against the payment gateway, and a store owner
-     * rejecting a script should not be able to trigger it. The order is flagged
+     * rejecting a prescription should not be able to trigger it. The order is flagged
      * instead, and an admin completes it through
      * POST /payments/{order}/refund.
      *
@@ -394,7 +410,7 @@ class PrescriptionController extends Controller
     /**
      * Recomputes an order's prescription_status from its line items.
      *
-     * Rejected beats pending beats approved: one rejected script is enough to hold
+     * Rejected beats pending beats approved: one rejected prescription is enough to hold
      * the whole order.
      */
     public function refreshOrderPrescriptionStatus(?Order $order): void
@@ -493,6 +509,8 @@ class PrescriptionController extends Controller
             'patient_name' => $prescription->patient_name,
             'doctor_name' => $prescription->doctor_name,
             'doctor_license' => $prescription->doctor_license,
+            'doctor_email' => $prescription->doctor_email,
+            'doctor_phone' => $prescription->doctor_phone,
             'hospital_name' => $prescription->hospital_name,
             'issued_date' => $prescription->issued_date?->toDateString(),
             'expires_at' => $prescription->expires_at?->toDateString(),

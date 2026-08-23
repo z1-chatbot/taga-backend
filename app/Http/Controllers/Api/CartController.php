@@ -20,7 +20,7 @@ class CartController extends Controller
     /**
      * Attach (or replace) the prescription on a basket line already added.
      *
-     * The storefront flow is add-to-basket, then upload the script, so the
+     * The storefront flow is add-to-basket, then upload the prescription, so the
      * shopper needs a way to connect the two without re-adding the item.
      */
     public function attachPrescription(Request $request, $id): JsonResponse
@@ -110,7 +110,7 @@ class CartController extends Controller
             'product_id' => 'required|exists:products,id',
             'quantity' => 'required|integer|min:1|max:10',
             'variation_id' => 'nullable|exists:product_variations,id',
-            // Prescription-only lines carry the script they are being bought
+            // Prescription-only lines carry the prescription they are being bought
             // against. Without this the field never reached the cart row and
             // every basket containing an Rx medicine failed at checkout.
             'prescription_id' => 'nullable|integer',
@@ -151,7 +151,7 @@ class CartController extends Controller
         }
 
         /*
-         * A prescription-only medicine can go into the basket without a script
+         * A prescription-only medicine can go into the basket without a prescription
          * attached yet. Requiring one here would mean uploading before you can
          * even add the item, which is a strange order to shop in and is not
          * what the product page promises.
@@ -218,7 +218,7 @@ class CartController extends Controller
             $cartItem->update([
                 'quantity' => $newQuantity,
                 'price' => $price,
-                // A newly supplied script replaces the one already on the line;
+                // A newly supplied prescription replaces the one already on the line;
                 // omitting it leaves the existing one alone.
                 'prescription_id' => $prescriptionId ?: $cartItem->prescription_id,
             ]);
@@ -589,7 +589,7 @@ class CartController extends Controller
 
             /*
              * Prescription state per line, so the basket can prompt for a
-             * missing script rather than letting the shopper reach checkout and
+             * missing prescription rather than letting the shopper reach checkout and
              * be refused there.
              */
             $requiresRx = (bool) ($item->product?->requires_prescription);
@@ -601,7 +601,7 @@ class CartController extends Controller
                 $prescription = \App\Models\Prescription::find($item->prescription_id);
                 $itemData['prescription_status'] = $prescription?->status;
 
-                // A rejected script is as good as none — the shopper has to
+                // A rejected prescription is as good as none — the shopper has to
                 // replace it before this line can be bought.
                 if ($prescription?->status === \App\Models\Prescription::STATUS_REJECTED) {
                     $itemData['needs_prescription_upload'] = true;

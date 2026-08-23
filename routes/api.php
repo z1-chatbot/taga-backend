@@ -557,6 +557,8 @@ Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function (
 
     // Banner Management
     Route::get('/banners', [App\Http\Controllers\Admin\BannerController::class, 'index']);
+    // Must stay above `/banners/{id}`, which would otherwise swallow "themes".
+    Route::get('/banners/themes', [App\Http\Controllers\Admin\BannerController::class, 'themes']);
     Route::get('/banners/{id}', [App\Http\Controllers\Admin\BannerController::class, 'show']);
     Route::post('/banners', [App\Http\Controllers\Admin\BannerController::class, 'store']);
     Route::post('/banners/{id}', [App\Http\Controllers\Admin\BannerController::class, 'update']); // POST for file upload

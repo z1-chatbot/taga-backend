@@ -29,6 +29,8 @@ class Prescription extends Model
         'patient_name',
         'doctor_name',
         'doctor_license',
+        'doctor_email',
+        'doctor_phone',
         'hospital_name',
         'issued_date',
         'expires_at',

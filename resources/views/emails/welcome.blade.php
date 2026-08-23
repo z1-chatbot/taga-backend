@@ -1,7 +1,7 @@
 @php use App\Support\EmailStyle as S; @endphp
 @extends('emails.layout')
 
-@section('preheader', 'Your Taga account is ready. Here is how the pharmacy marketplace works.')
+@section('preheader', 'Your Taga account is ready. Here is how the pharmacy platform works.')
 @section('heading', 'Welcome to Taga')
 
 @section('content')
@@ -14,9 +14,9 @@
          trusted suppliers", inherited from the business this codebase started
          as, on an email from a pharmacy. --}}
     <p style="{!! S::BODY !!}">
-        Taga is a marketplace for licensed Nigerian pharmacies. Every store is verified against
-        its premises licence before it can list anything, and prescription items are released
-        only after a pharmacist has reviewed the script.
+        Taga is a platform for licensed Nigerian pharmacies. Every store is verified against
+        its premises licence before it can list anything, and a pharmacist reviews your
+        prescription before any prescription-only medicine is released.
     </p>
 
     @if ($couponCode)

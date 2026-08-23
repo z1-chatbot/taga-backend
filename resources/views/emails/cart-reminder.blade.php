@@ -55,6 +55,6 @@
 @endsection
 
 @section('footnote')
-    Prescription items still need a valid script before they can be dispensed.
+    Prescription-only items cannot be dispensed until a pharmacist has reviewed your prescription.
     <a href="{{ AppUrl::storefront('/unsubscribe') }}" style="color:{{ S::INK_3 }};">Unsubscribe from these</a>.
 @endsection

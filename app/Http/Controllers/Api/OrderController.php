@@ -135,7 +135,7 @@ class OrderController extends Controller
             }
 
             /*
-             * A script still awaiting review does NOT block checkout.
+             * A prescription still awaiting review does NOT block checkout.
              *
              * The order is placed and paid for, then held at
              * prescription_status = pending until a pharmacist decides. Nothing
@@ -148,7 +148,7 @@ class OrderController extends Controller
              */
 
             // Approved but lapsed — isUsable() covers the expiry case. A pending
-            // script has no decision yet, so there is nothing to have lapsed.
+            // prescription has no decision yet, so there is nothing to have lapsed.
             if ($prescription->status !== \App\Models\Prescription::STATUS_PENDING
                 && ! $prescription->isUsable()) {
                 return response()->json([
@@ -353,7 +353,7 @@ class OrderController extends Controller
             }
         }
 
-        // Pharmacy guards: no expired stock, and every Rx line needs an approved script.
+        // Pharmacy guards: no expired stock, and every Rx line needs an approved prescription.
         if ($guard = $this->guardPharmacyRules($cartItems)) {
             return $guard;
         }
@@ -1421,7 +1421,7 @@ class OrderController extends Controller
          *
          * The prescription id is resolved against the caller first. Taking it
          * straight from the request body let anyone quote a stranger's approved
-         * script, and prescription ids are sequential.
+         * prescription, and prescription ids are sequential.
          */
         $prescription = $this->resolveOwnPrescription($request, $request->input('prescription_id'));
 

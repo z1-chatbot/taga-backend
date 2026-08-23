@@ -25,7 +25,7 @@ Basket total: ₦{{ number_format($cartTotal, 2) }}
 
 Go to your basket: {{ \App\Support\AppUrl::storefront('/cart') }}
 
-Prescription items still need a valid script before they can be dispensed.
+Prescription-only items cannot be dispensed until a pharmacist has reviewed your prescription.
 
 Unsubscribe from these: {{ \App\Support\AppUrl::storefront('/unsubscribe') }}
 

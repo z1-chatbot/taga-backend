@@ -10,10 +10,10 @@ use Illuminate\Http\Request;
  *
  * Both the cart and buy-now accept a prescription id from the request body.
  * Without this check either one lets a shopper quote someone else's approved
- * script — a stranger's id is all it takes to buy prescription-only medicine,
+ * prescription — a stranger's id is all it takes to buy prescription-only medicine,
  * and the record ids are sequential.
  *
- * Guests can upload before they have an account, so a script is owned either by
+ * Guests can upload before they have an account, so a prescription is owned either by
  * the account that uploaded it or by the guest id it was uploaded under.
  */
 trait ResolvesOwnPrescription
