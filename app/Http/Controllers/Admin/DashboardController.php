@@ -299,6 +299,25 @@ class DashboardController extends Controller
     }
 
     /**
+     * Minutes as something a person reads at a glance: "40 minutes", "2.3
+     * hours", "1.5 days". Whole units below ten, one decimal above, because
+     * "2.3 hours" is useful and "2.34 hours" is false precision on an average.
+     */
+    private function humanDuration(int $minutes): string
+    {
+        if ($minutes < 60) {
+            return $minutes . ' ' . ($minutes === 1 ? 'minute' : 'minutes');
+        }
+
+        $hours = $minutes / 60;
+        if ($hours < 48) {
+            return round($hours, 1) . ' hours';
+        }
+
+        return round($hours / 24, 1) . ' days';
+    }
+
+    /**
      * Get sales analytics
      */
     public function salesAnalytics(): JsonResponse
@@ -355,20 +374,32 @@ class DashboardController extends Controller
                                           ->groupBy('gateway')
                                           ->get();
 
-        // Calculate performance metrics
-        $totalVisitors = 1000; // This would come from analytics
-        $totalOrders = $salesData->sum('orders');
-        $conversionRate = $totalVisitors > 0 ? ($totalOrders / $totalVisitors) * 100 : 0;
-        
-        $returningCustomers = User::where('role', 'customer')
-                                 ->whereHas('orders', function($q) {
-                                     $q->havingRaw('COUNT(*) > 1');
-                                 })->count();
-        $totalCustomers = User::where('role', 'customer')->count();
-        $returnCustomerRate = $totalCustomers > 0 ? ($returningCustomers / $totalCustomers) * 100 : 0;
-        
-        // Cart abandonment (mock data - would need cart tracking)
-        $cartAbandonmentRate = 68.2;
+        /*
+         * Repeat purchase rate: of the customers who bought in this period, how
+         * many had bought before.
+         *
+         * Two things were wrong with the previous version. It counted every
+         * customer who had ever placed more than one order, against every
+         * customer account ever created — so it ignored the period filter
+         * entirely and sat unchanged next to figures that did move. And it
+         * counted orders regardless of whether they were ever paid for, so an
+         * abandoned checkout made someone a repeat customer.
+         */
+        $buyerIds = Order::where('payment_status', Order::PAYMENT_PAID)
+                         ->where('created_at', '>=', $startDate)
+                         ->whereNotNull('user_id')
+                         ->distinct()
+                         ->pluck('user_id');
+
+        $returningCustomers = Order::where('payment_status', Order::PAYMENT_PAID)
+                                   ->whereIn('user_id', $buyerIds)
+                                   ->where('created_at', '<', $startDate)
+                                   ->distinct()
+                                   ->count('user_id');
+
+        $returnCustomerRate = $buyerIds->count() > 0
+            ? ($returningCustomers / $buyerIds->count()) * 100
+            : 0;
         
         // Top selling products
         $topProducts = Product::select([
@@ -433,10 +464,57 @@ class DashboardController extends Controller
         $currentOrders = $salesData->sum('orders');
         $orderGrowth = $previousOrders > 0 ? (($currentOrders - $previousOrders) / $previousOrders) * 100 : 0;
 
-        // Time-based insights (mock data - would need detailed analytics)
-        $peakSalesHour = "2:00 PM";
-        $bestSalesDay = "Saturday";
-        $avgOrderProcessing = "2.3 hours";
+        /*
+         * Time-based insights, measured rather than asserted.
+         *
+         * These three were hardcoded to "2:00 PM", "Saturday" and "2.3 hours",
+         * with a comment saying detailed analytics would be needed. They would
+         * not: every figure here comes from columns the orders table already
+         * carries. The invented values were also plausible enough to be acted
+         * on, which is the dangerous kind of wrong — a merchandiser could have
+         * scheduled a campaign around a peak hour that was never measured.
+         *
+         * Each returns null when the period holds nothing to measure, and the
+         * dashboard shows "Not enough data" rather than a confident figure
+         * standing on one order.
+         */
+        $paidInPeriod = fn () => Order::where('payment_status', Order::PAYMENT_PAID)
+                                      ->where('created_at', '>=', $startDate);
+
+        $peakHourRow = $paidInPeriod()
+            ->select(DB::raw('HOUR(created_at) as hour'), DB::raw('COUNT(*) as orders'))
+            ->groupBy('hour')
+            ->orderByDesc('orders')
+            ->first();
+
+        $peakSalesHour = $peakHourRow
+            ? Carbon::createFromTime((int) $peakHourRow->hour)->format('g:00 A')
+            : null;
+
+        $bestDayRow = $paidInPeriod()
+            ->select(DB::raw('DAYOFWEEK(created_at) as weekday'), DB::raw('COUNT(*) as orders'))
+            ->groupBy('weekday')
+            ->orderByDesc('orders')
+            ->first();
+
+        // MySQL's DAYOFWEEK is 1-indexed from Sunday; Carbon's dayOfWeek is
+        // 0-indexed from Sunday.
+        $bestSalesDay = $bestDayRow
+            ? Carbon::now()->startOfWeek(Carbon::SUNDAY)
+                           ->addDays((int) $bestDayRow->weekday - 1)
+                           ->format('l')
+            : null;
+
+        // Order placed to order dispatched. `shipped_at` is the first moment
+        // the pharmacy has genuinely finished with it, and orders still sitting
+        // unshipped are excluded rather than counted as instant.
+        $avgProcessingMinutes = $paidInPeriod()
+            ->whereNotNull('shipped_at')
+            ->avg(DB::raw('TIMESTAMPDIFF(MINUTE, created_at, shipped_at)'));
+
+        $avgOrderProcessing = $avgProcessingMinutes !== null
+            ? $this->humanDuration((int) round($avgProcessingMinutes))
+            : null;
 
         return response()->json([
             'success' => true,
@@ -457,10 +535,22 @@ class DashboardController extends Controller
                     'total_orders' => (int) $salesData->sum('orders'),
                     'average_order_value' => (float) $salesData->avg('avg_order_value')
                 ],
+                /*
+                 * `conversion_rate` and `cart_abandonment_rate` used to sit
+                 * here and are deliberately gone rather than fixed.
+                 *
+                 * Conversion needs a visitor count, and nothing on this
+                 * platform counts visitors — the old figure divided orders by a
+                 * literal 1000. Abandonment needs carts that were started and
+                 * never completed, but a cart row is deleted once it becomes an
+                 * order, so the converted half leaves no trace to measure
+                 * against. Both are answerable, and both need data we do not
+                 * yet collect. A blank is honest; 68.2% was not.
+                 */
                 'performance_metrics' => [
-                    'conversion_rate' => round($conversionRate, 1),
                     'return_customer_rate' => round($returnCustomerRate, 1),
-                    'cart_abandonment_rate' => $cartAbandonmentRate
+                    'repeat_customers' => $returningCustomers,
+                    'period_customers' => $buyerIds->count(),
                 ],
                 'time_insights' => [
                     'peak_sales_hour' => $peakSalesHour,
