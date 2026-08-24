@@ -58,7 +58,21 @@ return [
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),
-            'url' => env('APP_URL').'/storage',
+            /*
+             * /media, not Laravel's default /storage.
+             *
+             * This host blocks the /storage prefix at the web server, before
+             * PHP runs: a request for a file that does not even exist came back
+             * 403 from LiteSpeed with no x-powered-by header, while the same
+             * .jpg under any other prefix reached Laravel and 404'd properly.
+             * It is a sensible rule for them to have — /storage is where a
+             * default Laravel install leaks logs and uploads — and not one we
+             * can switch off, so the prefix is simply not usable here.
+             *
+             * Stored values are disk-relative, so this changes the URL without
+             * touching a single row.
+             */
+            'url' => env('APP_URL').'/media',
             'visibility' => 'public',
             'throw' => false,
             'report' => false,

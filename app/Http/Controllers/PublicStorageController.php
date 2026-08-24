@@ -7,41 +7,44 @@ use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Serves files from the `public` disk at /storage/{path}.
+ * Serves files from the `public` disk at /media/{path}.
  *
- * Normally this is the web server's job: `php artisan storage:link` puts a
- * symlink at public/storage and the file is served statically, no PHP involved.
- * That is faster and is what Laravel expects.
+ * Laravel's own arrangement is a public/storage symlink served statically by the
+ * web server, with no PHP involved. Neither half of that survives this host, and
+ * it took three wrong diagnoses to establish why, so the evidence is recorded
+ * here rather than left to be rediscovered.
  *
- * It did not work on this host, and the reason turned out to be two separate
- * problems wearing one 403.
+ * The prefix. Hostinger blocks /storage at the web server, ahead of PHP. What
+ * proved it: a request for a file that does not exist returned 403 from
+ * LiteSpeed with no `x-powered-by` header, while the identical .jpg under any
+ * other prefix reached Laravel and 404'd properly. Nothing in application code
+ * or file permissions can reach that decision. It is a reasonable rule for a
+ * shared host to enforce, since /storage is exactly where a careless Laravel
+ * deploy exposes its logs, so this is worked around rather than argued with.
  *
- * The first was ours. config/filesystems.php had `'serve' => true` on the
- * *private* `local` disk, which makes Laravel register its own
- * `GET storage/{path}` route for signed temporary URLs. That route occupies the
- * exact path the public disk is served from, and answers anything without a
- * valid signature with 403. Any /storage request that reached PHP was refused
- * before it could get near a file. Reproduced locally, and it is now off.
+ * The route. config/filesystems.php had `'serve' => true` on the *private*
+ * `local` disk, which makes Laravel register its own `GET storage/{path}` route
+ * for signed URLs. It occupied the same path the public disk is served from and
+ * answered every unsigned request with 403 — a second, independent 403 hiding
+ * behind the first. Reproduced locally and now off. Nothing generates signed
+ * URLs here; prescriptions and licence documents stream through authenticated
+ * controllers, which is stricter.
  *
- * The second may or may not exist: whether this host's LiteSpeed will follow
- * the symlink at all is still untested, since the application was rejecting the
- * request first. Rather than find out across another deploy cycle, .htaccess
- * now routes /storage into the front controller unconditionally, which is
- * correct either way.
+ * Two false leads, for the record: file permissions (`namei` showed the whole
+ * path traversable and the file 0644) and the symlink itself (deleting it
+ * changed nothing, because the prefix was blocked either way).
  *
- * Serving it here is the same thing prescriptions and licence documents have
- * always done, which is what makes it safe to rely on: PHP reading a file it
- * owns is not something this host has ever objected to.
+ * Serving through PHP is the same thing prescriptions have always done, and is
+ * what makes it dependable here: reading a file the application owns is not
+ * something this host has ever objected to. The cost is a PHP process per image
+ * instead of a static read; the cache headers below turn repeat visits into
+ * 304s. Whether a public/media symlink would allow static serving is untested —
+ * worth trying only if image traffic ever justifies it.
  *
- * The cost is a PHP process per image rather than a static file read. At this
- * traffic that is fine, and the cache headers below mean a returning visitor
- * revalidates with a 304 instead of re-downloading.
- *
- * This is public by design — banners, product photographs, sale artwork.
- * Anything confidential belongs on the `local` disk behind an authenticated
- * route, which is where prescriptions already are. Nothing private should ever
- * be written to the `public` disk on the assumption that this route guards it,
- * because it does not.
+ * This is public by design. Anything confidential belongs on the `local` disk
+ * behind an authenticated route. Nothing private should be written to the
+ * `public` disk on the assumption that this route guards it, because it does
+ * not.
  */
 class PublicStorageController extends Controller
 {

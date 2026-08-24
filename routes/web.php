@@ -17,13 +17,13 @@ Route::get('/', function () {
 });
 
 /*
- * Public disk files.
+ * Public disk files: banners, product photographs, sale artwork.
  *
- * This host will not follow the public/storage symlink, so the application
- * serves these itself. See App\Http\Controllers\PublicStorageController for
- * why, and public/.htaccess for the rewrite that gets the request here at all.
+ * Served by the application rather than statically, and under /media rather
+ * than Laravel's /storage, both for host reasons documented in
+ * App\Http\Controllers\PublicStorageController.
  */
-Route::get('/storage/{path}', \App\Http\Controllers\PublicStorageController::class)
+Route::get('/media/{path}', \App\Http\Controllers\PublicStorageController::class)
     ->where('path', '.+');
 
 /*

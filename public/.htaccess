@@ -17,22 +17,6 @@
 
     RewriteEngine On
 
-    # Serve /storage through the application, not the web server.
-    #
-    # The intended arrangement is the public/storage symlink plus static
-    # serving, which is faster and needs no PHP. This host does not reliably
-    # deliver it: banners returned 403 with every directory on the path
-    # traversable and the file 0644, and neither `Options +FollowSymLinks` nor
-    # `+SymLinksIfOwnerMatch` changed anything.
-    #
-    # Forcing every /storage request into index.php makes the outcome the same
-    # whichever layer was refusing, at the cost of a PHP process per image.
-    # See App\Http\Controllers\PublicStorageController.
-    #
-    # This has to come before the front-controller conditions below, which only
-    # forward a request when the file does not exist.
-    RewriteRule ^storage/ index.php [L]
-
     # Block dotfiles anywhere in the path.
     RewriteRule (^|/)\. - [F,L]
 
