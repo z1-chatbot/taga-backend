@@ -1,3 +1,16 @@
+# Serve files under /storage, which is a symlink into storage/app/public.
+#
+# LiteSpeed (and Apache) refuse to traverse a symlink unless this is set, and
+# they answer the refusal with 403 rather than 404 — which reads like a
+# permissions problem on the file and sends you looking in the wrong place. The
+# whole path is world-traversable and the image is 0644; the server simply would
+# not follow the link.
+#
+# If a host has AllowOverride locked down for Options, this line 500s the whole
+# app. `Options +SymLinksIfOwnerMatch` is the fallback: narrower, more commonly
+# permitted, and satisfied here since the link and its target share an owner.
+Options +FollowSymLinks
+
 # Never serve dotfiles. A copy of .env was previously left in this directory by
 # a deploy script, and with no rule like this it was fetchable over HTTP.
 <FilesMatch "^\.">
