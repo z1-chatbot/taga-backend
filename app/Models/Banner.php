@@ -49,6 +49,7 @@ class Banner extends Model
         'bg_color',
         'position',
         'sort_order',
+        'show_content',
         'is_active',
         'start_date',
         'end_date',
@@ -59,6 +60,7 @@ class Banner extends Model
         'start_date' => 'datetime',
         'end_date' => 'datetime',
         'sort_order' => 'integer',
+        'show_content' => 'boolean',
     ];
 
     /**

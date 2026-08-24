@@ -22,6 +22,9 @@ class BannerController extends Controller
             'title' => ($creating ? 'required' : 'sometimes|required') . '|string|max:255',
             'subtitle' => 'nullable|string|max:255',
             'description' => 'nullable|string',
+            // Whether the title, subtitle, description and button are drawn
+            // over the band, or the artwork is left to speak for itself.
+            'show_content' => 'boolean',
             'image' => ($creating ? 'required' : 'nullable') . '|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
             // Deliberately not the `url` rule. Most banners point somewhere on
             // the storefront, and `url` rejects "/products?category=vitamins" —
