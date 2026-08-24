@@ -33,7 +33,24 @@ return [
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),
-            'serve' => true,
+
+            /*
+             * Off, and it matters. `serve => true` makes Laravel register a
+             * `GET storage/{path}` route for signed temporary URLs to this
+             * private disk — and that route squats on the exact path the public
+             * disk is served from, shadowing it and answering every unsigned
+             * request with 403.
+             *
+             * That is what was 403-ing banners: the request reached PHP and
+             * Laravel refused it for want of a signature, which looks exactly
+             * like a web-server permission problem and sends you hunting
+             * through file modes and symlink options for it.
+             *
+             * Nothing here generates signed URLs anyway. Prescriptions and
+             * licence documents are streamed by authenticated controllers, which
+             * is stricter than a signature and does not need this.
+             */
+            'serve' => false,
             'throw' => false,
             'report' => false,
         ],

@@ -1,16 +1,3 @@
-# Serve files under /storage, which is a symlink into storage/app/public.
-#
-# LiteSpeed (and Apache) refuse to traverse a symlink unless this is set, and
-# they answer the refusal with 403 rather than 404 — which reads like a
-# permissions problem on the file and sends you looking in the wrong place. The
-# whole path is world-traversable and the image is 0644; the server simply would
-# not follow the link.
-#
-# If a host has AllowOverride locked down for Options, this line 500s the whole
-# app. `Options +SymLinksIfOwnerMatch` is the fallback: narrower, more commonly
-# permitted, and satisfied here since the link and its target share an owner.
-Options +FollowSymLinks
-
 # Never serve dotfiles. A copy of .env was previously left in this directory by
 # a deploy script, and with no rule like this it was fetchable over HTTP.
 <FilesMatch "^\.">
@@ -29,6 +16,22 @@ Options +FollowSymLinks
     </IfModule>
 
     RewriteEngine On
+
+    # Serve /storage through the application, not the web server.
+    #
+    # The intended arrangement is the public/storage symlink plus static
+    # serving, which is faster and needs no PHP. This host does not reliably
+    # deliver it: banners returned 403 with every directory on the path
+    # traversable and the file 0644, and neither `Options +FollowSymLinks` nor
+    # `+SymLinksIfOwnerMatch` changed anything.
+    #
+    # Forcing every /storage request into index.php makes the outcome the same
+    # whichever layer was refusing, at the cost of a PHP process per image.
+    # See App\Http\Controllers\PublicStorageController.
+    #
+    # This has to come before the front-controller conditions below, which only
+    # forward a request when the file does not exist.
+    RewriteRule ^storage/ index.php [L]
 
     # Block dotfiles anywhere in the path.
     RewriteRule (^|/)\. - [F,L]

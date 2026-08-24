@@ -17,6 +17,16 @@ Route::get('/', function () {
 });
 
 /*
+ * Public disk files.
+ *
+ * This host will not follow the public/storage symlink, so the application
+ * serves these itself. See App\Http\Controllers\PublicStorageController for
+ * why, and public/.htaccess for the rewrite that gets the request here at all.
+ */
+Route::get('/storage/{path}', \App\Http\Controllers\PublicStorageController::class)
+    ->where('path', '.+');
+
+/*
  * Deployment endpoint for hosting without a terminal.
  *
  * Replaces the 28 loose PHP scripts that used to sit in public/, each guarded
