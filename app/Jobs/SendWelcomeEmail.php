@@ -18,27 +18,42 @@ class SendWelcomeEmail implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * A deleted user means there is nothing to send, not a failure.
+     *
+     * SerializesModels stores only an id and reloads the record when the job
+     * runs. Without this, a job whose user has since been deleted throws
+     * ModelNotFoundException, and Laravel routes that to failed_jobs — where it
+     * sits looking like a mail problem to investigate, when in fact there is
+     * simply nobody left to email. Four such rows are what a deleted staff
+     * account left behind.
+     *
+     * Safe here specifically because none of the dispatch sites for this job
+     * sit inside an open transaction. `after_commit` is false on every queue
+     * connection, so a job dispatched mid-transaction could run before the
+     * commit and find no row — and with this set, that transient miss would be
+     * silently discarded rather than retried. That is not the situation for
+     * this job; check it again before copying this line onto another one.
+     */
+    public $deleteWhenMissingModels = true;
+
     public $user;
-    public $couponCode;
 
     /**
      * Create a new job instance.
      */
-    /**
-     * @param  string|null  $couponCode  A coupon that genuinely exists and is
-     *                                   usable. Null means the email offers none.
+    /*
+     * No coupon parameter.
+     *
+     * This used to accept one and guard it with Coupon::usable(), which read as
+     * a fix and was not: App\Mail\WelcomeEmail replaced the resulting null
+     * with a hardcoded 'WELCOME10' as soon as it received it. Signing up earns
+     * no discount on this platform, so there is nothing here to validate — the
+     * safest version of a coupon that does not exist is no parameter at all.
      */
-    public function __construct(User $user, ?string $couponCode = null)
+    public function __construct(User $user)
     {
         $this->user = $user;
-
-        // Only ever promise a code that will actually work at checkout. This
-        // used to fall back to a hardcoded 'WELCOME10' when no coupon was
-        // passed — and no such coupon has ever existed, so every welcome email
-        // offered a discount that the basket then refused.
-        $this->couponCode = $couponCode && Coupon::usable($couponCode)
-            ? $couponCode
-            : null;
     }
 
     /**
@@ -64,7 +79,7 @@ class SendWelcomeEmail implements ShouldQueue
 
             // Send the email
             Mail::to($this->user->email)->send(
-                new WelcomeEmail($this->user, $this->couponCode)
+                new WelcomeEmail($this->user)
             );
 
             // Mark as sent

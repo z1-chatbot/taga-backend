@@ -23,15 +23,29 @@ class WelcomeEmail extends Mailable
     protected string $mailbox = 'noreply';
 
     public $user;
-    public $couponCode;
 
-    /**
-     * Create a new message instance.
+    /*
+     * No coupon, deliberately.
+     *
+     * There is no sign-up bonus on this platform and there never has been. This
+     * class used to end its constructor with
+     *
+     *     $this->couponCode = $couponCode ?? 'WELCOME10';
+     *
+     * which meant every welcome email advertised a discount code that had never
+     * been created — `Coupon::usable('WELCOME10')` is false and the coupons
+     * table has no such row, so the basket refused it at checkout.
+     *
+     * The job that dispatches this had already been fixed to resolve an
+     * unusable code to null before handing it over. That fix did nothing: this
+     * line put the phantom code straight back one statement later, and the
+     * comments in the job and the template both described an intent this class
+     * silently defeated. The parameter is gone rather than defaulted to null,
+     * so it cannot be reintroduced by passing something in.
      */
-    public function __construct(User $user, ?string $couponCode = null)
+    public function __construct(User $user)
     {
         $this->user = $user;
-        $this->couponCode = $couponCode ?? 'WELCOME10';
     }
 
     /**

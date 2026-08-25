@@ -19,15 +19,9 @@
         prescription before any prescription-only medicine is released.
     </p>
 
-    @if ($couponCode)
-        {{-- Only ever shown for a coupon that exists and is still live. This
-             block used to print a hardcoded WELCOME10 that was never created. --}}
-        @include('emails.partials.well', [
-            'label' => 'Your welcome code',
-            'value' => $couponCode,
-        ])
-        <p style="{!! S::SMALL !!}">Enter it at checkout.</p>
-    @endif
+    {{-- No welcome code. This block printed a hardcoded WELCOME10 that was
+         never created as a coupon, so it advertised a discount the basket then
+         refused. There is no sign-up bonus on this platform. --}}
 
     @include('emails.partials.button', [
         'url' => \App\Support\AppUrl::storefront('/products'),

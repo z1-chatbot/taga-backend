@@ -17,6 +17,25 @@ class SendCartReminderEmail implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * A deleted user means there is nothing to send, not a failure.
+     *
+     * SerializesModels stores only an id and reloads the record when the job
+     * runs. Without this, a job whose user has since been deleted throws
+     * ModelNotFoundException, and Laravel routes that to failed_jobs — where it
+     * sits looking like a mail problem to investigate, when in fact there is
+     * simply nobody left to email. Four such rows are what a deleted staff
+     * account left behind.
+     *
+     * Safe here specifically because none of the dispatch sites for this job
+     * sit inside an open transaction. `after_commit` is false on every queue
+     * connection, so a job dispatched mid-transaction could run before the
+     * commit and find no row — and with this set, that transient miss would be
+     * silently discarded rather than retried. That is not the situation for
+     * this job; check it again before copying this line onto another one.
+     */
+    public $deleteWhenMissingModels = true;
+
     public $user;
     public $cartItems;
     public $cartTotal;
