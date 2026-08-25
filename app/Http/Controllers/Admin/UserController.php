@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Carbon\Carbon;
 
 class UserController extends Controller
@@ -50,7 +51,21 @@ class UserController extends Controller
             return $denied;
         }
 
-        $query = User::with('roleRelation')->where('role', '!=', 'admin');
+        /*
+         * Every account, administrators included.
+         *
+         * This used to be `->where('role', '!=', 'admin')`, which hid admin
+         * accounts outright — so creating an administrator through this very
+         * page produced a user that then could not be found on it. The account
+         * existed and the list simply never showed it.
+         *
+         * Hiding them was not a safeguard either, because the destructive
+         * actions were guarded separately (and toggleStatus was not guarded at
+         * all until now). Only platform staff reach this endpoint: a store
+         * account is refused by denyStoreAccount() above, and the route
+         * requires users.view.
+         */
+        $query = User::with('roleRelation');
 
         // Apply filters
         if ($request->filled('search')) {
@@ -63,7 +78,15 @@ class UserController extends Controller
         }
 
         if ($request->filled('role')) {
-            $query->where('role', $request->get('role'));
+            $role = $request->get('role');
+
+            // Match the string column or the related role. Staff accounts have
+            // both set and agree, but a row whose `role` string drifted from
+            // its role_id would otherwise be unfindable by either name.
+            $query->where(function ($q) use ($role) {
+                $q->where('role', $role)
+                    ->orWhereHas('roleRelation', fn ($r) => $r->where('name', $role));
+            });
         }
 
         if ($request->filled('role_id')) {
@@ -152,7 +175,19 @@ class UserController extends Controller
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|email|unique:users,email,' . $id,
             'phone' => 'sometimes|nullable|string|max:20',
-            'role' => 'sometimes|in:admin,customer,vendor',
+            /*
+             * Was `in:admin,customer,vendor`. Two faults in one line: "vendor"
+             * is not a role this system has ever had, and every real staff role
+             * (manager, support, store_owner and the rest) was rejected — so
+             * changing a staff member's role here always failed validation.
+             *
+             * It also let anyone holding users.edit set a role of "admin",
+             * which a manager holds. Granting yourself or a colleague admin was
+             * a single PUT away. The rule below accepts the roles that exist,
+             * and the check after it is what stops a non-admin handing out
+             * administrator.
+             */
+            'role' => ['sometimes', Rule::in(self::assignableRoleNames())],
             'role_id' => 'sometimes|nullable|exists:roles,id',
             'is_active' => 'sometimes|boolean',
             'password' => 'sometimes|string|min:8|confirmed',
@@ -180,6 +215,15 @@ class UserController extends Controller
                 'message' => 'Validation failed',
                 'errors' => $errors
             ], 422);
+        }
+
+        // Granting administrator is an administrator's decision.
+        if (($request->input('role') === 'admin' || $this->rolesToAdmin($request))
+            && ! $request->user()?->isPlatformAdmin()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only an administrator can grant administrator access.',
+            ], 403);
         }
 
         $data = $request->only(['name', 'email', 'phone', 'role', 'role_id', 'is_active']);
@@ -320,34 +364,94 @@ class UserController extends Controller
     /**
      * Get available roles for assignment (excludes store staff roles)
      */
-    public function getRoles(): JsonResponse
+    /**
+     * Roles, for a dropdown.
+     *
+     * Two callers want two different lists, so `?all=1` picks which.
+     *
+     * Assignment (the default) excludes store-specific roles: those are handed
+     * out on the store's own staff page, not here.
+     *
+     * Filtering wants everything, because the user list *does* contain store
+     * staff — a shop's manager or sales assistant is a user like any other. A
+     * filter offering only the assignable roles cannot find them, which is how
+     * the dropdown ended up listing two roles, one of which ("vendor") has
+     * never existed in this system and so always returned nothing.
+     */
+
+    /**
+     * Role names this endpoint will accept on a user.
+     *
+     * Read from the roles table rather than written out, so a role added to the
+     * seeder is immediately assignable instead of being rejected by a list
+     * nobody remembered to update. 'customer' is added explicitly: customers
+     * carry role='customer' with no row in `roles`, so it exists as a value
+     * without existing as a record.
+     */
+    private static function assignableRoleNames(): array
     {
-        // Exclude store-specific roles (those starting with 'store_')
-        // Store staff roles should only be available on the store staff management page
-        $roles = Role::active()
-            ->ordered()
-            ->where(function($query) {
-                $query->where('name', 'not like', 'store_%')
-                      ->orWhere('name', '=', 'store_owner'); // Keep store_owner for admin assignment
-            })
-            ->get(['id', 'name', 'display_name', 'description']);
+        return Role::query()->pluck('name')->push('customer')->unique()->values()->all();
+    }
+
+    /**
+     * Whether this request would put the user into the admin role by id.
+     *
+     * Checked separately from the `role` string because role_id is the other
+     * way in: setting role_id to the admin role grants exactly the same access
+     * without the word "admin" appearing anywhere in the payload.
+     */
+    private function rolesToAdmin(Request $request): bool
+    {
+        if (! $request->filled('role_id')) {
+            return false;
+        }
+
+        return Role::where('id', $request->input('role_id'))->value('name') === 'admin';
+    }
+
+    public function getRoles(Request $request): JsonResponse
+    {
+        $query = Role::active()->ordered();
+
+        if (! $request->boolean('all')) {
+            $query->where(function ($q) {
+                $q->where('name', 'not like', 'store_%')
+                    ->orWhere('name', '=', 'store_owner'); // Keep store_owner for admin assignment
+            });
+        }
 
         return response()->json([
             'success' => true,
-            'data' => $roles
+            'data' => $query->get(['id', 'name', 'display_name', 'description']),
         ]);
     }
 
     /**
      * Toggle user active status
      */
-    public function toggleStatus($id): JsonResponse
+    public function toggleStatus(Request $request, $id): JsonResponse
     {
         if ($denied = $this->denyStoreAccount()) {
             return $denied;
         }
 
         $user = User::findOrFail($id);
+
+        /*
+         * Only an administrator may switch another administrator off.
+         *
+         * There was no check here at all. `users.manage_status` belongs to the
+         * manager role as well, so any manager could deactivate an admin
+         * account — and now that administrators are visible in the list above,
+         * that would have been one click away. Deletion was already guarded;
+         * deactivation locks someone out just as effectively.
+         */
+        if ($user->role === 'admin' && ! $request->user()?->isPlatformAdmin()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only an administrator can change another administrator\'s status.',
+            ], 403);
+        }
 
         $user->update([
             'is_active' => !$user->is_active
