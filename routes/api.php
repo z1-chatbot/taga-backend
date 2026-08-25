@@ -433,6 +433,24 @@ Route::prefix('v1/admin')->middleware(['auth.token'])->group(function () {
     Route::put('/categories/{id}', [CategoryController::class, 'update'])->middleware('permission:products.edit');
     Route::delete('/categories/{id}', [CategoryController::class, 'destroy'])->middleware('permission:products.delete');
 
+    /*
+     * Form reference data: the vocabularies a create/edit form fills its
+     * dropdowns from.
+     *
+     * These sat in the admin-role group below, which meant a pharmacy opening
+     * the product form got "Access denied. Admin privileges required." — and
+     * because the form loads them in the same Promise.all as its categories,
+     * one 403 took the whole form down and no categories appeared either.
+     *
+     * They were never privileged. `/api/v1/settings/product-attributes` has
+     * always served the identical payload with no authentication at all, so the
+     * admin gate on this copy protected nothing; it only locked out the people
+     * who needed it. Keyed to the permission for the form each one feeds.
+     */
+    Route::get('/settings/product-attributes', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getProductAttributes'])->middleware('permission:products.view');
+    Route::get('/settings/coupon-types', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getCouponTypes'])->middleware('permission:coupons.view');
+    Route::get('/settings/sale-event-types', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getSaleEventTypes'])->middleware('permission:sales.view');
+
     // Category attributes — the per-category flexible field definitions
     Route::get('/categories/{id}/attributes', [CategoryAttributeController::class, 'index'])->middleware('permission:products.view');
     Route::post('/categories/{id}/attributes', [CategoryAttributeController::class, 'store'])->middleware('permission:products.create');
@@ -538,9 +556,10 @@ Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function (
     Route::get('/settings', [App\Http\Controllers\Admin\SystemSettingsController::class, 'index']);
     Route::get('/settings/admin/all', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getAllForAdmin']);
     Route::get('/settings/category/{category}', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getByCategory']);
-    Route::get('/settings/product-attributes', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getProductAttributes']);
-    Route::get('/settings/sale-event-types', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getSaleEventTypes']);
-    Route::get('/settings/coupon-types', [App\Http\Controllers\Admin\SystemSettingsController::class, 'getCouponTypes']);
+    // product-attributes, coupon-types and sale-event-types are registered in
+    // the permission-gated group above, not here: they are form reference data
+    // rather than platform settings, and gating them on the admin role locked
+    // pharmacies out of their own product and coupon forms.
     Route::post('/settings', [App\Http\Controllers\Admin\SystemSettingsController::class, 'store']);
     Route::post('/settings/initialize-defaults', [App\Http\Controllers\Admin\SystemSettingsController::class, 'initializeDefaults']);
     Route::post('/settings/bulk-update', [App\Http\Controllers\Admin\SystemSettingsController::class, 'bulkUpdate']);

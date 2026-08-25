@@ -83,13 +83,19 @@ class AuthController extends Controller
             try {
                 Mail::to($user->email)->send(new VerifyEmail($user, $token));
 
+                // Marked sent, not left pending. logEmail() creates the row as
+                // pending and something has to resolve it; these four call sites
+                // never did, so every verification email this platform has ever
+                // delivered still counts as "pending" in the delivery history.
+                // That is not cosmetic — it is the report you read when asking
+                // which emails failed, and it was showing successes as failures.
                 EmailLog::logEmail(
                     $user->email,
                     'verification',
                     'Verify Your Email - Taga',
                     null,
                     $user->id
-                );
+                )->markAsSent();
             } catch (\Throwable $e) {
                 $emailSent = false;
 
@@ -472,14 +478,17 @@ class AuthController extends Controller
             $user->markEmailAsVerified();
             $user->update(['is_active' => true]);
 
-            // Log successful verification
+            // Log successful verification. This one records an event rather
+            // than a send, so it is marked resolved immediately — left pending
+            // it would sit in the delivery history forever as an email that
+            // never went out, which is not what it is.
             EmailLog::logEmail(
                 $user->email,
                 'verification_success',
                 'Email Verified Successfully',
                 null,
                 $user->id
-            );
+            )->markAsSent();
 
             // Dispatch welcome email job
             SendWelcomeEmail::dispatch($user)->delay(now()->addSeconds(5));
@@ -546,14 +555,14 @@ class AuthController extends Controller
             // Send verification email
             Mail::to($user->email)->send(new VerifyEmail($user, $token));
 
-            // Log the email
+            // Marked sent — see the note on registration above.
             EmailLog::logEmail(
                 $user->email,
                 'verification_resend',
                 'Verify Your Email - Taga',
                 null,
                 $user->id
-            );
+            )->markAsSent();
 
             return response()->json([
                 'success' => true,

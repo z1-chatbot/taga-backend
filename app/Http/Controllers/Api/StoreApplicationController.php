@@ -143,7 +143,11 @@ class StoreApplicationController extends Controller
 
             Mail::to($user->email)->send(new VerifyEmail($user, $token));
 
-            EmailLog::logEmail($user->email, 'verification', 'Verify Your Email - Taga', null, $user->id);
+            // Marked sent: this line runs only after the send above succeeded,
+            // and a row left pending would report a delivered email as an
+            // outstanding one.
+            EmailLog::logEmail($user->email, 'verification', 'Verify Your Email - Taga', null, $user->id)
+                ->markAsSent();
 
             return true;
         } catch (\Throwable $e) {

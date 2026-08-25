@@ -101,10 +101,41 @@ class MailDoctor extends Command
             $this->line("  failed      {$failed}");
 
             if ($pending > 0) {
+                /*
+                 * What is waiting, and how long it has waited.
+                 *
+                 * Both matter before you drain. A backlog that has sat for days
+                 * is not just undelivered mail — it is mail that will go out
+                 * the moment a worker starts, and an order-status email
+                 * arriving a week after the order is worse than one that never
+                 * arrives. `attempts` separates the two failure modes this
+                 * command exists to tell apart: 0 across the board means
+                 * nothing has ever picked these up, whereas a non-zero count
+                 * means a worker is running and the sends themselves are
+                 * failing.
+                 */
+                foreach ($this->pendingByType() as $name => $count) {
+                    $this->line("    {$count}x {$name}");
+                }
+
+                if ($oldest = $this->oldestPendingJob()) {
+                    $this->line('    oldest      '.$oldest->diffForHumans());
+                }
+
+                $untried = $this->untriedJobs();
+
                 $this->warn("  ! {$pending} job(s) waiting. If this number never falls, nothing is");
                 $this->line('    draining the queue. The scheduler does it once a minute, so check');
                 $this->line('    the cron entry:');
                 $this->line('      * * * * * cd '.base_path().' && php artisan schedule:run >> /dev/null 2>&1');
+
+                if ($untried === $pending) {
+                    $this->line('    All '.$pending.' have attempts=0 — never picked up, so nothing');
+                    $this->line('    reached the mail server at all. That is a worker problem, not');
+                    $this->line('    an SMTP one.');
+                }
+
+                $this->line('    Drain by hand: php artisan queue:work --stop-when-empty');
                 $problems++;
             }
         }
@@ -177,6 +208,47 @@ class MailDoctor extends Command
             return DB::table('jobs')->count();
         } catch (\Throwable) {
             return 0;
+        }
+    }
+
+    /** Waiting jobs grouped by class, so you can see what a drain would send. */
+    private function pendingByType(): array
+    {
+        try {
+            $counts = [];
+
+            foreach (DB::table('jobs')->get(['payload']) as $job) {
+                $name = json_decode($job->payload, true)['displayName'] ?? 'unknown';
+                $counts[$name] = ($counts[$name] ?? 0) + 1;
+            }
+
+            arsort($counts);
+
+            return $counts;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /** Jobs no worker has ever touched — the signature of a stalled queue. */
+    private function untriedJobs(): int
+    {
+        try {
+            return DB::table('jobs')->where('attempts', 0)->count();
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
+    private function oldestPendingJob(): ?\Illuminate\Support\Carbon
+    {
+        try {
+            $timestamp = DB::table('jobs')->min('created_at');
+
+            // The column is a unix timestamp, not a datetime.
+            return $timestamp ? \Illuminate\Support\Carbon::createFromTimestamp((int) $timestamp) : null;
+        } catch (\Throwable) {
+            return null;
         }
     }
 

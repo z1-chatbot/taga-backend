@@ -202,6 +202,44 @@ class EmailDeliveryAuditTest extends TestCase
         );
     }
 
+    public function test_credential_emails_are_not_queued(): void
+    {
+        $queued = [];
+
+        foreach ([
+            \App\Jobs\SendStaffWelcomeEmail::class,
+            \App\Jobs\SendStoreOwnerWelcomeEmail::class,
+        ] as $class) {
+            if ((new ReflectionClass($class))->implementsInterface(\Illuminate\Contracts\Queue\ShouldQueue::class)) {
+                $queued[] = $class;
+            }
+        }
+
+        /*
+         * This is the one assertion in the suite that could have caught the
+         * live fault, and it is deliberately about shape rather than behaviour.
+         *
+         * phpunit.xml sets QUEUE_CONNECTION=sync, so every queued job runs
+         * inline during a test. A job that never leaves the `jobs` table in
+         * production therefore passes every Mail::assertSent() we can write —
+         * which is exactly what happened: the staff welcome email had passing
+         * tests while no colleague had ever received one.
+         *
+         * These two carry the password somebody needs in order to sign in at
+         * all. If the queue stops moving they must still be attempted, and
+         * fail loudly if they fail, rather than sitting unattempted with the
+         * dashboard reporting success.
+         */
+        $this->assertSame(
+            [],
+            $queued,
+            "these carry sign-in credentials and must not depend on a queue worker:
+  "
+                .implode("
+  ", $queued)
+        );
+    }
+
     public function test_the_configured_admin_address_is_a_declared_config_key(): void
     {
         // Not merely readable — actually declared in config/mail.php, so it
