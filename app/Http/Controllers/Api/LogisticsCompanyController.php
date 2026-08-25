@@ -932,22 +932,15 @@ class LogisticsCompanyController extends Controller
         // that job eat into money already claimed.
         $company->decrement('available_balance', $amount);
 
-        // Send notification email to admin
-        try {
-            $adminEmails = User::where('role', 'admin')->pluck('email')->toArray();
-            if (!empty($adminEmails)) {
-                Mail::to($adminEmails)->send(
-                    new PayoutRequestedEmail(
-                        $payout, 
-                        'logistics_company', 
-                        $company->name,
-                        $company->admin_email
-                    )
-                );
-            }
-        } catch (\Exception $e) {
-            \Log::error('Failed to send payout request email to admin: ' . $e->getMessage());
-        }
+        // Through AdminAlerts rather than a local lookup — see the note on the
+        // store-side request for why one message per administrator beats one
+        // message addressed to all of them.
+        \App\Services\AdminAlerts::payoutRequested(
+            $payout,
+            'logistics_company',
+            $company->name,
+            $company->admin_email
+        );
 
         return response()->json([
             'success' => true,

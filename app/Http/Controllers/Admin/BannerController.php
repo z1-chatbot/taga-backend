@@ -138,10 +138,24 @@ class BannerController extends Controller
                         ->ordered()
                         ->get();
 
+        // Explicitly uncacheable.
+        //
+        // This response carries no cache headers of its own, which leaves an
+        // intermediary free to apply its own heuristic — and the site sits
+        // behind an edge cache that does exactly that for a plain 200 GET with
+        // no query beyond a position. The symptom is an admin editing a
+        // banner's copy or its sort order, seeing the change in the dashboard,
+        // and finding the storefront still showing the old band for as long as
+        // the edge holds it: the kind of staleness that looks like the ordering
+        // feature not working rather than like a cache.
+        //
+        // Banners are edited to be seen immediately, and the payload is a
+        // handful of rows, so there is nothing to be won by caching it.
         return response()->json([
             'success' => true,
             'data' => $banners
-        ]);
+        ])->header('Cache-Control', 'no-store, no-cache, must-revalidate')
+          ->header('Pragma', 'no-cache');
     }
 
     /**

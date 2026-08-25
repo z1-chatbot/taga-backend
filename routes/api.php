@@ -294,6 +294,10 @@ Route::prefix('v1')->middleware('auth.token')->group(function () {
         Route::post('/verification', [StoreVerificationController::class, 'submit']);
     });
 
+    // The pharmacy policy as it applies to the calling pharmacy: read-only, and
+    // outside the /stores/{slug} public wildcard rather than inside it.
+    Route::get('/store/pharmacy-policy', [PharmacyPolicyController::class, 'forStore']);
+
     // Store-side prescription review queue
     Route::get('/store/prescriptions', [PrescriptionController::class, 'storeQueue']);
     Route::post('/prescriptions/{id}/review', [PrescriptionController::class, 'review']);

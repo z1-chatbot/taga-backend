@@ -71,7 +71,7 @@ class StoreVerificationDecisionEmail extends Mailable
         return new Envelope(
             subject: $this->approved
                 ? ($this->isApplicant
-                    ? "{$this->store->name} is approved — your Taga dashboard is ready"
+                    ? "{$this->store->name} is approved â€” your Taga dashboard is ready"
                     : "{$this->store->name} is verified and now selling on Taga")
                 : "We could not verify the pharmacy licence for {$this->store->name}",
         );

@@ -553,8 +553,34 @@ class Order extends Model
     // numbers come from OrderController::generateOrderNumber().
 
     /**
+     * The delivery code, minted once and then left alone.
+     *
+     * Every path that confirms a payment has to be able to call this without
+     * checking first, because the alternative is what actually happened: the
+     * code was generated on some paid paths and not others, and the one email
+     * that carries it renders the block behind `@if ($order->delivery_code)`.
+     * A missing code did not fail loudly — it silently removed the code from
+     * the customer's confirmation email, which is indistinguishable from the
+     * template having been changed.
+     *
+     * Idempotent on purpose. Re-minting on a second call would invalidate a
+     * code the customer has already been emailed and is holding at the door.
+     */
+    public function ensureDeliveryCode(): string
+    {
+        if ($this->delivery_code) {
+            return $this->delivery_code;
+        }
+
+        return $this->generateDeliveryCode();
+    }
+
+    /**
      * Generate a unique 6-digit delivery confirmation code.
      * Customer must provide this code to the delivery agent to receive their package.
+     *
+     * Prefer ensureDeliveryCode() unless you specifically mean to replace an
+     * existing code — this one always mints a new one.
      */
     public function generateDeliveryCode()
     {

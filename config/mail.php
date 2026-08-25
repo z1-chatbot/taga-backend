@@ -31,6 +31,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Platform Administrator Address
+    |--------------------------------------------------------------------------
+    |
+    | Fallback recipient for platform notifications when no user with role
+    | `admin` exists. App\Support\PlatformAdmins prefers real admin accounts
+    | and only reaches for this.
+    |
+    | This key is declared here because code was already reading it —
+    | `config('mail.admin_email', env('ADMIN_EMAIL', 'admin@example.com'))` —
+    | against a key that did not exist. That call always fell through to its
+    | default, and the default calls env() outside a config file: once
+    | `config:cache` has run the .env is never loaded, env() returns null, and
+    | the address resolved to the literal admin@example.com. Declaring it here
+    | is what makes the environment variable actually reachable in production.
+    |
+    */
+
+    'admin_email' => env('ADMIN_EMAIL'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Mailer Configurations
     |--------------------------------------------------------------------------
     |

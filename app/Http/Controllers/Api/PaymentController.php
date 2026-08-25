@@ -383,6 +383,10 @@ class PaymentController extends Controller
             // Reduce stock quantities
             $this->paystackService->reduceStock($order);
 
+            // A manually confirmed payment is a paid order like any other, and
+            // the customer still has to read a code to the rider.
+            $order->ensureDeliveryCode();
+
             // Send order placed/confirmed notifications to all parties
             try {
                 $notificationService = new \App\Services\OrderNotificationService();

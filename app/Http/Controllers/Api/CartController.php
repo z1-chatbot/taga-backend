@@ -391,6 +391,33 @@ class CartController extends Controller
             ], 401);
         }
 
+        // Adopt anything the guest uploaded, before anything else.
+        //
+        // This runs ahead of the early return below on purpose. A shopper can
+        // upload a prescription from /prescriptions with an empty basket, sign
+        // in, and have no guest cart at all to merge — and with these two
+        // blocks the other way round their upload stayed attached to a session
+        // id that nothing would ever ask about again. From their side the
+        // prescription simply vanished on sign-in and they were asked to send
+        // it a second time.
+        $adopted = Prescription::where('session_id', $guestId)
+            ->whereNull('user_id')
+            ->update([
+                'user_id' => $userId,
+                // Cleared so the row is owned once, by an account. Leaving the
+                // session id behind would let anyone who later held that guest
+                // id read a signed-in customer's medical record through the
+                // guest branch of canView().
+                'session_id' => null,
+            ]);
+
+        if ($adopted > 0) {
+            \Log::info('Adopted guest prescriptions on sign-in', [
+                'user_id' => $userId,
+                'count' => $adopted,
+            ]);
+        }
+
         // Get guest cart items
         $guestCartItems = Cart::with(['product', 'product.category'])
                              ->where('session_id', $guestId)
@@ -414,10 +441,22 @@ class CartController extends Controller
                 $newQuantity = $existingUserItem->quantity + $guestItem->quantity;
                 $maxQuantity = min($newQuantity, $guestItem->product->stock_quantity, 10);
                 
-                $existingUserItem->update([
+                $merged = [
                     'quantity' => $maxQuantity,
                     'price' => $guestItem->product->current_price // Update to current price
-                ]);
+                ];
+
+                // Carry the prescription across with the quantity. The guest
+                // line is deleted at the end of this method, so a prescription
+                // attached to it and not copied here is simply thrown away —
+                // and the shopper is asked to upload again for a medicine they
+                // had already covered. The account's own attachment wins where
+                // there is one; only an empty slot is filled.
+                if (! $existingUserItem->prescription_id && $guestItem->prescription_id) {
+                    $merged['prescription_id'] = $guestItem->prescription_id;
+                }
+
+                $existingUserItem->update($merged);
             } else {
                 // Move guest item to user cart
                 $guestItem->update([

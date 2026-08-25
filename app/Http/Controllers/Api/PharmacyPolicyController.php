@@ -9,11 +9,18 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
- * Admin management of the pharmacy business-policy settings.
+ * The pharmacy business-policy settings: admin management, and a read-only
+ * view for the pharmacies those settings govern.
  *
  * Only the tunable policy knobs are exposed here. The safety and legal invariants
  * documented in App\Support\PharmacyPolicy are not settings and cannot be changed
  * through this endpoint.
+ *
+ * The read-only half exists because every one of these rules is enforced against
+ * the pharmacy, not against the platform. Minimum shelf life decides which of
+ * their stock is sellable; prescription validity decides when a customer's
+ * prescription stops covering their medicines. A store that cannot see the
+ * numbers finds out what they are by having a sale refused.
  */
 class PharmacyPolicyController extends Controller
 {
@@ -25,15 +32,89 @@ class PharmacyPolicyController extends Controller
                 'policy' => PharmacyPolicy::all(),
                 // Surfaced so the admin UI can show operators what is enforced
                 // unconditionally, rather than leaving it invisible.
-                'enforced_always' => [
-                    'Expired stock can never be sold.',
-                    'Controlled substances always require explicit, separate permission.',
-                    'A lapsed pharmacy licence revokes regulated-selling permission.',
-                    'Orders with prescription items cannot ship until every prescription is approved.',
-                    'Prescription files are stored privately and served only to authorised users.',
+                'enforced_always' => $this->enforcedAlways(),
+            ],
+        ]);
+    }
+
+    /**
+     * The same policy, for a pharmacy, with no way to change it.
+     *
+     * Deliberately a separate method rather than opening show() to store
+     * accounts. It answers a different question — not "what are the platform's
+     * settings" but "what applies to me" — and so it carries the store's own
+     * standing alongside the numbers: whether it may sell prescription or
+     * controlled medicines today, and when its licence runs out. Those are the
+     * facts that make the shelf-life and validity figures actionable rather
+     * than trivia.
+     *
+     * Mounted outside the /stores/{slug} prefix on purpose. That prefix is a
+     * public wildcard route carrying a hand-maintained negative-lookahead list
+     * of every non-slug path under it, and adding a sixth entry to that regex
+     * is one more thing to forget.
+     */
+    public function forStore(Request $request): JsonResponse
+    {
+        $store = $this->resolveStore($request);
+
+        if (! $store) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No store associated with this account.',
+            ], 403);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'policy' => PharmacyPolicy::all(),
+                'enforced_always' => $this->enforcedAlways(),
+                // Where this store stands against the rules above.
+                'store' => [
+                    'name' => $store->name,
+                    'verification_status' => $store->verification_status,
+                    'can_sell_prescription' => (bool) $store->can_sell_prescription,
+                    'can_sell_controlled' => (bool) $store->can_sell_controlled,
+                    'licence_expiry' => $store->pharmacy_license_expiry?->toDateString(),
                 ],
             ],
         ]);
+    }
+
+    /**
+     * The store behind the calling account: its owner, or the staff they hired.
+     */
+    private function resolveStore(Request $request): ?\App\Models\Store
+    {
+        $user = $request->user();
+
+        if (! $user) {
+            return null;
+        }
+
+        if ($user->store_id) {
+            return \App\Models\Store::find($user->store_id);
+        }
+
+        return \App\Models\Store::where('owner_id', $user->id)->first();
+    }
+
+    /**
+     * The invariants, in one place.
+     *
+     * Both audiences are shown the same list, and a rule that was added for one
+     * and not the other would be exactly the kind of divergence nobody notices
+     * until a pharmacy is surprised by an enforcement it was never told about.
+     */
+    private function enforcedAlways(): array
+    {
+        return [
+            'Expired stock can never be sold.',
+            'Controlled substances always require explicit, separate permission.',
+            'A lapsed pharmacy licence revokes regulated-selling permission.',
+            'Orders with prescription items cannot ship until every prescription is approved.',
+            'Prescription files are stored privately and served only to authorised users.',
+        ];
     }
 
     public function update(Request $request): JsonResponse

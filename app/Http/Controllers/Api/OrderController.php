@@ -508,9 +508,24 @@ class OrderController extends Controller
                 \Log::error('OrderController@store - Failed to create shipments: ' . $e->getMessage());
             }
 
-            // Generate delivery code for COD orders (online payment orders get it via webhook)
+            // COD only. Online orders get theirs the moment payment is
+            // confirmed, on every one of those paths rather than just the
+            // webhook the old comment here named.
             if ($request->is_pay_on_delivery) {
-                $order->generateDeliveryCode();
+                $order->ensureDeliveryCode();
+
+                // Cash orders reached the pharmacy silently. The three online
+                // payment paths all call this; the COD path never did, so a
+                // store's first sight of a cash order was whenever it next
+                // opened the orders page, and no administrator heard about it
+                // at all.
+                try {
+                    (new \App\Services\OrderNotificationService())->notifyOrderPlaced($order->fresh());
+                } catch (\Throwable $e) {
+                    \Log::error('Failed to send COD order notifications: '.$e->getMessage(), [
+                        'order_id' => $order->id,
+                    ]);
+                }
             }
 
             // Send order confirmation email for COD orders
@@ -1102,7 +1117,7 @@ class OrderController extends Controller
     public function adminShow($id): JsonResponse
     {
         $user = auth()->user();
-        $order = Order::with(['user', 'items.product.store', 'coupon', 'saleEvent', 'paymentTransactions', 'shipments.deliveryAgent.logisticsCompany', 'deliveryAgent.logisticsCompany', 'logisticsCompany', 'trackingEvents'])
+        $order = Order::with(['user', 'items.product.store', 'items.prescription.reviewer', 'coupon', 'saleEvent', 'paymentTransactions', 'shipments.deliveryAgent.logisticsCompany', 'deliveryAgent.logisticsCompany', 'logisticsCompany', 'trackingEvents'])
                      ->findOrFail($id);
 
         // Anyone who is not a platform admin sees only orders carrying their own
@@ -1131,10 +1146,105 @@ class OrderController extends Controller
             )->values());
         }
 
+        // The prescriptions this order was bought against, drawn from the item
+        // list *after* the store scoping above — so a pharmacy sees the
+        // prescriptions covering its own lines and nobody else's.
+        $payload = $order->toArray();
+        $payload['prescriptions'] = $this->orderPrescriptions($order, $user);
+
         return response()->json([
             'success' => true,
-            'data' => $order
+            'data' => $payload
         ]);
+    }
+
+    /**
+     * The prescriptions attached to an order's lines, ready to be reviewed.
+     *
+     * Prescriptions were reachable only from a queue of their own — a flat list
+     * of documents with no order beside them. A pharmacist deciding whether a
+     * prescription covers a purchase has to see the purchase, and had to go and
+     * find it by hand; a rejection cancels the order and refunds it, so that is
+     * not a decision anyone should be making from a filename.
+     *
+     * One row per prescription rather than per line, because one document
+     * routinely covers several medicines in the same basket, and reviewing it
+     * three times is both three chances to decide differently and three audit
+     * entries for one judgement. The lines it covers are listed inside it.
+     *
+     * Never includes `file_path`. The document is served only through
+     * PrescriptionController::download, which re-checks who is asking.
+     */
+    private function orderPrescriptions(Order $order, $user): array
+    {
+        $isAdmin = $user && $user->isPlatformAdmin();
+        $storeId = $user && ! $isAdmin ? $user->storeScopeId() : null;
+
+        $grouped = [];
+
+        foreach ($order->items as $item) {
+            $prescription = $item->prescription;
+
+            if (! $prescription) {
+                continue;
+            }
+
+            if (! isset($grouped[$prescription->id])) {
+                // Who may act on it. An admin always may; a pharmacy may only
+                // for prescriptions routed to it. This mirrors the checks in
+                // PrescriptionController::review() rather than replacing them —
+                // the API still decides, this only stops the dashboard offering
+                // a button that can only fail.
+                $ownsIt = $isAdmin || ($storeId !== null && (int) $prescription->store_id === $storeId);
+
+                $settled = $prescription->status !== \App\Models\Prescription::STATUS_PENDING;
+
+                $canReview = $ownsIt && (
+                    ! $settled
+                    // A store reviewer can never re-decide; an admin can, if
+                    // policy allows, and that override is recorded.
+                    || ($isAdmin && \App\Support\PharmacyPolicy::allowAdminPrescriptionOverride())
+                );
+
+                $grouped[$prescription->id] = [
+                    'id' => $prescription->id,
+                    'status' => $prescription->status,
+                    'is_usable' => $prescription->isUsable(),
+                    'original_filename' => $prescription->original_filename,
+                    'mime_type' => $prescription->mime_type,
+                    'file_size' => $prescription->file_size,
+                    'download_url' => "/api/v1/prescriptions/{$prescription->id}/download",
+                    'patient_name' => $prescription->patient_name,
+                    'doctor_name' => $prescription->doctor_name,
+                    'doctor_license' => $prescription->doctor_license,
+                    'doctor_email' => $prescription->doctor_email,
+                    'doctor_phone' => $prescription->doctor_phone,
+                    'hospital_name' => $prescription->hospital_name,
+                    'issued_date' => $prescription->issued_date?->toDateString(),
+                    'expires_at' => $prescription->expires_at?->toDateString(),
+                    'notes' => $prescription->notes,
+                    'rejection_reason' => $prescription->rejection_reason,
+                    'reviewed_at' => $prescription->reviewed_at?->toIso8601String(),
+                    'reviewed_by_type' => $prescription->reviewed_by_type,
+                    'reviewed_by' => $prescription->reviewer?->name,
+                    'can_review' => $canReview,
+                    'is_reviewed' => $settled,
+                    'uploaded_at' => $prescription->created_at?->toIso8601String(),
+                    'items' => [],
+                ];
+            }
+
+            $grouped[$prescription->id]['items'][] = [
+                'id' => $item->id,
+                // The snapshot first: it is what was actually bought, and it
+                // survives the product being renamed or delisted afterwards.
+                'name' => $item->product_snapshot['name'] ?? $item->product?->name,
+                'quantity' => $item->quantity,
+                'requires_prescription' => (bool) $item->required_prescription,
+            ];
+        }
+
+        return array_values($grouped);
     }
 
     /**
@@ -1601,9 +1711,24 @@ class OrderController extends Controller
                 \Log::error('OrderController@buyNow - Failed to create shipments: ' . $e->getMessage());
             }
 
-            // Generate delivery code for COD orders (online payment orders get it via webhook)
+            // COD only. Online orders get theirs the moment payment is
+            // confirmed, on every one of those paths rather than just the
+            // webhook the old comment here named.
             if ($request->is_pay_on_delivery) {
-                $order->generateDeliveryCode();
+                $order->ensureDeliveryCode();
+
+                // Cash orders reached the pharmacy silently. The three online
+                // payment paths all call this; the COD path never did, so a
+                // store's first sight of a cash order was whenever it next
+                // opened the orders page, and no administrator heard about it
+                // at all.
+                try {
+                    (new \App\Services\OrderNotificationService())->notifyOrderPlaced($order->fresh());
+                } catch (\Throwable $e) {
+                    \Log::error('Failed to send COD order notifications: '.$e->getMessage(), [
+                        'order_id' => $order->id,
+                    ]);
+                }
             }
 
             // Send order confirmation email for COD orders

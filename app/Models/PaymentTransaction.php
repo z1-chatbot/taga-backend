@@ -122,6 +122,12 @@ class PaymentTransaction extends Model
             $paystackService = app(\App\Services\PaystackService::class);
             $paystackService->reduceStock($this->order);
 
+            // Ahead of the emails, not after them. notifyOrderPlaced() sends to
+            // the customer, and generating the code below it meant the ordering
+            // of two adjacent statements decided whether the code was in the
+            // message.
+            $this->order->ensureDeliveryCode();
+
             // Send order placed/confirmed notifications to all parties
             try {
                 $notificationService = new \App\Services\OrderNotificationService();
@@ -130,9 +136,6 @@ class PaymentTransaction extends Model
             } catch (\Exception $e) {
                 \Log::error("Failed to send order placed notifications (webhook): " . $e->getMessage());
             }
-
-            // Generate delivery confirmation code
-            $this->order->generateDeliveryCode();
 
             // Send order confirmed email (for both authenticated and guest users)
             $emailRecipient = null;

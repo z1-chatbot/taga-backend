@@ -529,22 +529,12 @@ class StoreController extends Controller
             'requested_at' => now(),
         ]);
 
-        // Send notification email to admin
-        try {
-            $adminEmails = User::where('role', 'admin')->pluck('email')->toArray();
-            if (!empty($adminEmails)) {
-                Mail::to($adminEmails)->send(
-                    new PayoutRequestedEmail(
-                        $payout, 
-                        'store_owner', 
-                        $store->name, 
-                        $user->email
-                    )
-                );
-            }
-        } catch (\Exception $e) {
-            \Log::error('Failed to send payout request email to admin: ' . $e->getMessage());
-        }
+        // Through AdminAlerts rather than a local lookup: this sent one message
+        // addressed to every administrator at once, which put all their
+        // addresses in a To header each of them could read, and meant a single
+        // bad address took the whole notification down. It now sends one
+        // message each and absorbs a failure per recipient.
+        \App\Services\AdminAlerts::payoutRequested($payout, 'store_owner', $store->name, $user->email);
 
         return response()->json([
             'success' => true,

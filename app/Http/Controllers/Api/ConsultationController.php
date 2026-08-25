@@ -107,6 +107,11 @@ class ConsultationController extends Controller
 
         $this->sendAcknowledgement($consultation);
 
+        // And tell somebody who can actually answer it. The customer got a
+        // receipt; the practitioners got nothing, so a question about
+        // medication sat in a queue until someone thought to open it.
+        \App\Services\AdminAlerts::consultationRaised($consultation);
+
         return response()->json([
             'success' => true,
             'message' => "Request received. Quote {$consultation->reference} if you get in touch.",

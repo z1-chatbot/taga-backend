@@ -171,6 +171,13 @@ class PaystackService
                         // Clear cart after successful payment
                         $this->clearCart($order);
 
+                        // Before any email goes out. This is the path a customer
+                        // actually returns through from Paystack, and it never
+                        // minted a code — the comment further down claiming the
+                        // confirmation "contains delivery code" was simply wrong,
+                        // and the block was dropped from every such email.
+                        $order->ensureDeliveryCode();
+
                         // Send order placed/confirmed notifications to all parties
                         try {
                             $notificationService = new \App\Services\OrderNotificationService();

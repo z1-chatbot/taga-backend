@@ -11,19 +11,24 @@ use Illuminate\Support\Facades\Log;
 class OrderNotificationService
 {
     /**
-     * Notify all parties when order is placed
+     * Notify the trade side when an order is placed and paid for.
+     *
+     * The customer is deliberately not told from here. They used to be: this
+     * sent them an "order_placed" message and then, in the very next statement
+     * of every caller, an OrderStatusEmail('confirmed') went out as well — two
+     * emails about one event, arriving in the same second, saying the same
+     * thing in two different templates.
+     *
+     * The 'confirmed' one is the survivor. It carries the delivery code, which
+     * is the one thing in a post-payment email a customer has to keep, and it
+     * reads as a receipt rather than an announcement. Anything that belongs in
+     * the customer's copy belongs in emails/order-status.blade.php now, not
+     * here.
      */
     public function notifyOrderPlaced(Order $order)
     {
         Log::info("OrderNotificationService: Sending order placed notifications for order #{$order->order_number}");
-        
-        // Notify customer
-        $this->sendToCustomer($order, 'order_placed', [
-            'order_number' => $order->order_number,
-            'total_amount' => $order->total_amount,
-            'items_count' => $order->items->count()
-        ]);
-        
+
         // Notify store owner(s)
         $this->sendToStoreOwners($order, 'new_order', [
             'order_number' => $order->order_number,
@@ -261,29 +266,56 @@ class OrderNotificationService
     /**
      * Send email to admin
      */
+    /**
+     * Tell every platform administrator.
+     *
+     * This used to resolve one address as
+     * `config('mail.admin_email', env('ADMIN_EMAIL', 'admin@example.com'))`.
+     * config/mail.php declared no such key, so it always fell through to the
+     * default — and that default calls env() outside a config file, which
+     * returns null once `config:cache` has run, because Laravel then never
+     * loads the .env at all. Every order notification from a cached-config
+     * deploy went to the literal admin@example.com.
+     *
+     * PlatformAdmins resolves real admin accounts first and treats the
+     * configured address as a fallback for a platform that has none yet.
+     */
     private function sendToAdmin(Order $order, string $template, array $data = [])
     {
-        $adminEmail = config('mail.admin_email', env('ADMIN_EMAIL', 'admin@example.com'));
-        
-        try {
-            $emailLog = EmailLog::logEmail(
-                $adminEmail,
-                'order_' . $template,
-                'Order Notification',
-                null,
-                null
-            );
-            
-            Mail::to($adminEmail)->send(
-                new OrderNotificationEmail($order, $template, 'Admin', $data)
-            );
-            
-            $emailLog->markAsSent();
-            Log::info("Sent {$template} email to admin: {$adminEmail}");
-        } catch (\Exception $e) {
-            Log::error("Failed to send email to admin: " . $e->getMessage());
-            if (isset($emailLog)) {
-                $emailLog->markAsFailed($e->getMessage());
+        $recipients = \App\Support\PlatformAdmins::emails();
+
+        if (empty($recipients)) {
+            Log::warning("No platform administrator to notify about order {$order->order_number}", [
+                'hint' => 'Create a user with role=admin, or set ADMIN_EMAIL.',
+            ]);
+
+            return;
+        }
+
+        foreach ($recipients as $adminEmail) {
+            try {
+                $emailLog = EmailLog::logEmail(
+                    $adminEmail,
+                    'order_' . $template,
+                    'Order Notification',
+                    null,
+                    null
+                );
+
+                // A fresh mailable per recipient: Mailable::to() accumulates,
+                // so reusing one instance across the loop would send the second
+                // message to two people and the third to three.
+                Mail::to($adminEmail)->send(
+                    new OrderNotificationEmail($order, $template, 'Admin', $data)
+                );
+
+                $emailLog->markAsSent();
+                Log::info("Sent {$template} email to admin: {$adminEmail}");
+            } catch (\Exception $e) {
+                Log::error("Failed to send email to admin: " . $e->getMessage());
+                if (isset($emailLog)) {
+                    $emailLog->markAsFailed($e->getMessage());
+                }
             }
         }
     }

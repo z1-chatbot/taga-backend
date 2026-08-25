@@ -68,6 +68,18 @@ class AgentPayoutController extends Controller
 
         try {
             $payout = $agent->requestPayout($request->amount);
+
+            // Riders were the one requester type nobody was told about. Stores
+            // and logistics companies both emailed administrators on request;
+            // a rider's withdrawal debited their balance and then waited for
+            // somebody to notice it in a queue.
+            \App\Services\AdminAlerts::payoutRequested(
+                $payout,
+                'delivery_agent',
+                $agent->name ?? 'Rider #'.$agent->id,
+                $agent->email
+            );
+
             return response()->json(['success' => true, 'data' => $payout]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 400);

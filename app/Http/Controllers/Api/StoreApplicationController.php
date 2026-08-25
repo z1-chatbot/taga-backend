@@ -118,6 +118,12 @@ class StoreApplicationController extends Controller
         // outage must not roll back an account whose email is now taken.
         $verificationSent = $this->sendVerificationEmail($user);
 
+        // And put it in front of a reviewer. An application announced itself to
+        // nobody: the applicant was told we would email them either way, and
+        // the only thing standing between them and that promise was somebody
+        // remembering to open the verification queue.
+        \App\Services\AdminAlerts::pharmacyApplied($store->fresh());
+
         return response()->json([
             'success' => true,
             'message' => 'Thank you. Your pharmacy licence is with our team for review, and we '

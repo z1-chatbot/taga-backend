@@ -85,11 +85,60 @@ class StoreVerificationController extends Controller
             ]
         ));
 
+        $this->notifySubmission($store->fresh());
+
         return response()->json([
             'success' => true,
             'message' => 'Verification submitted. Our team will review your licence.',
             'data' => $this->present($store->fresh()),
         ]);
+    }
+
+    /**
+     * Confirm the submission to the pharmacy, and put it in front of a reviewer.
+     *
+     * Submitting used to be silent both ways. The pharmacy had no confirmation
+     * that the document arrived, and nothing told the platform there was
+     * anything in the queue — so a licence sat unreviewed until somebody
+     * happened to open the page, while the pharmacy watched its regulated
+     * listings go dark with no explanation.
+     *
+     * Neither message may take the submission down with it if the mail server
+     * is having a bad day: the licence is already saved by the time this runs,
+     * and losing the upload because an SMTP connection timed out would be a far
+     * worse outcome than a missing email. Hence a catch around each, separately,
+     * so a failure to reach the reviewers does not also cost the pharmacy its
+     * acknowledgement.
+     */
+    private function notifySubmission(Store $store): void
+    {
+        $applicant = $store->email ?: $store->owner?->email;
+
+        if ($applicant) {
+            try {
+                \Illuminate\Support\Facades\Mail::to($applicant)->send(
+                    new \App\Mail\StoreVerificationSubmittedEmail($store, forReviewer: false)
+                );
+            } catch (\Throwable $e) {
+                \Log::error('Failed to acknowledge a licence submission: '.$e->getMessage(), [
+                    'store_id' => $store->id,
+                ]);
+            }
+        } else {
+            \Log::warning('Licence submitted but there is no address to acknowledge it to', [
+                'store_id' => $store->id,
+            ]);
+        }
+
+        // Through the shared resolver rather than a lookup of its own. This
+        // method grew its own copy of "who are the admins" before there was one
+        // place to ask, and four such copies had already drifted into three
+        // different answers.
+        \App\Support\PlatformAdmins::notify(
+            fn () => new \App\Mail\StoreVerificationSubmittedEmail($store, forReviewer: true),
+            'a licence submission',
+            ['store_id' => $store->id],
+        );
     }
 
     /**
