@@ -98,12 +98,36 @@ class EmailDesignSystemTest extends TestCase
         $used = '~(ui-monospace|SFMono|Consolas|Menlo|Courier|Liberation Mono)|font-family\s*:[^;\'"]*monospace~i';
 
         foreach (array_merge($this->convertedTemplates(), [app_path('Support/EmailStyle.php')]) as $file) {
-            if (preg_match($used, (string) file_get_contents($file))) {
+            // Comments stripped first, for the same reason the prose exception
+            // above exists — and it caught a second one: the delivery templates
+            // discuss couriers constantly, and "Courier" is also a font. A face
+            // can only be set in code, never in a comment, so reading only the
+            // code is both stricter and correct.
+            if (preg_match($used, $this->withoutComments((string) file_get_contents($file)))) {
                 $offenders[] = basename($file);
             }
         }
 
         $this->assertSame([], $offenders, 'these set a monospace face, which the design system does not use: '.implode(', ', $offenders));
+    }
+
+    /**
+     * Source with its comments removed: Blade, HTML, and both PHP forms.
+     *
+     * These tests ask what a template *does*, and a comment does nothing.
+     */
+    private function withoutComments(string $source): string
+    {
+        return (string) preg_replace(
+            [
+                '~\{\{--.*?--\}\}~s',   // Blade
+                '~<!--.*?-->~s',         // HTML
+                '~/\*.*?\*/~s',          // PHP and CSS block
+                '~^\s*//.*$~m',           // PHP line
+            ],
+            '',
+            $source
+        );
     }
 
     /**

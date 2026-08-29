@@ -63,7 +63,37 @@
 
     <p style="{!! S::BODY !!}">{{ $intros[$statusType] ?? 'There is an update on your order.' }}</p>
 
-    @if ($statusType === 'confirmed' && $order->delivery_code)
+    @php
+        /*
+         * One code per parcel.
+         *
+         * An order split across two pharmacies arrives as two deliveries on two
+         * different days, and a single code shared between them lets either
+         * rider close out the other's delivery. A single-pharmacy order — which
+         * is most of them — has one parcel carrying the order's own code, and
+         * reads exactly as it always has.
+         */
+        $codedParcels = $statusType === 'confirmed'
+            ? $order->shipments->filter(fn ($parcel) => $parcel->delivery_code)
+            : collect();
+    @endphp
+
+    @if ($codedParcels->count() > 1)
+        <p style="{!! S::BODY !!}">
+            Your order comes from more than one pharmacy, so it arrives as separate deliveries
+            &mdash; each with its own code.
+        </p>
+        @foreach ($codedParcels as $parcel)
+            @include('emails.partials.well', [
+                'label' => 'Delivery code — '.($parcel->store->name ?? 'Parcel '.$loop->iteration),
+                'value' => $parcel->delivery_code,
+            ])
+        @endforeach
+        <p style="{!! S::SMALL !!}">
+            Read each rider the code for the parcel they are carrying, when it arrives and not
+            before. It is how we know the right person received it.
+        </p>
+    @elseif ($statusType === 'confirmed' && $order->delivery_code)
         @include('emails.partials.well', [
             'label' => 'Delivery code',
             'value' => $order->delivery_code,

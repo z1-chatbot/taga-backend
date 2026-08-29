@@ -80,9 +80,36 @@
 
     $cancelled = in_array($notificationType, ['order_cancelled', 'delivery_cancelled'], true);
 
-    // The old template sent this to config('app.url') — the API's own host,
-    // which serves no order page at all.
-    $orderUrl = AppUrl::storefront('/orders/'.$order->id);
+    /*
+     * Where "View this order" goes depends on who is reading.
+     *
+     * This was always the storefront, which is the customer's order page. A
+     * pharmacy following it from a "You have a new order" email landed on a
+     * page belonging to the customer, which it cannot open — so the one link
+     * in the message a vendor most needs was a dead end. Their order lives in
+     * the dashboard.
+     *
+     * (Before that it pointed at config('app.url') — the API's own host, which
+     * serves no order page at all.)
+     */
+    $orderUrl = match ($notificationType) {
+        'new_order' => AppUrl::admin('/orders/'.$order->id),
+        default => AppUrl::storefront('/orders/'.$order->id),
+    };
+
+    /*
+     * A vendor's own share, not the whole order.
+     *
+     * An order can be split across several pharmacies, and each of them gets
+     * one of these. Showing the order total told a pharmacy supplying ₦3,000
+     * of a ₦12,000 basket that they had a ₦12,000 order — and incidentally
+     * disclosed what the other pharmacies were selling into it.
+     *
+     * `store_subtotal` is passed in when the notification is addressed to a
+     * particular store. Without it (the customer's copy, an admin's copy) the
+     * order-wide figures are the right ones.
+     */
+    $forOneStore = $notificationType === 'new_order' && isset($data['store_subtotal']);
 @endphp
 
 @extends('emails.layout')
@@ -132,11 +159,14 @@
             'Order' => e($order->order_number),
             'Placed' => $order->created_at->format('j F Y, H:i'),
             'Status' => e($tidy($order->status)),
-            'Subtotal' => $money($order->subtotal),
-            'Shipping' => ($order->shipping_amount ?? 0) > 0 ? $money($order->shipping_amount) : null,
-            'Tax' => ($order->tax_amount ?? 0) > 0 ? $money($order->tax_amount) : null,
-            'Discount' => ($order->discount_amount ?? 0) > 0 ? '&minus;'.$money($order->discount_amount) : null,
-            'Total' => '<span style="'.S::PRICE.'">'.$money($order->total_amount).'</span>',
+            'Your items' => $forOneStore ? e($data['store_item_count'].' of '.$data['order_item_count']) : null,
+            'Subtotal' => $forOneStore ? null : $money($order->subtotal),
+            'Shipping' => ! $forOneStore && ($order->shipping_amount ?? 0) > 0 ? $money($order->shipping_amount) : null,
+            'Tax' => ! $forOneStore && ($order->tax_amount ?? 0) > 0 ? $money($order->tax_amount) : null,
+            'Discount' => ! $forOneStore && ($order->discount_amount ?? 0) > 0 ? '&minus;'.$money($order->discount_amount) : null,
+            'Total' => $forOneStore
+                ? '<span style="'.S::PRICE.'">'.$money($data['store_subtotal']).'</span>'
+                : '<span style="'.S::PRICE.'">'.$money($order->total_amount).'</span>',
         ]),
     ])
 

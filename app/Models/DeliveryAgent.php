@@ -222,6 +222,24 @@ class DeliveryAgent extends Authenticatable
     }
 
     /**
+     * Joining a company gives up any rate agreed with them personally.
+     *
+     * A rider under a company is not a payee — the company settles with them
+     * directly, so they have no earnings here and cannot request a payout. A
+     * personal rate left behind would be a number nobody is paid against, and
+     * it would silently come back into force if they ever went independent
+     * again, on terms agreed for a different arrangement.
+     */
+    protected static function booted(): void
+    {
+        static::updated(function (self $agent) {
+            if ($agent->wasChanged('logistics_company_id') && ! $agent->isPaidDirectly()) {
+                ShippingRate::where('delivery_agent_id', $agent->id)->delete();
+            }
+        });
+    }
+
+    /**
      * Whether this rider is paid by the platform at all.
      *
      * A rider signed up under a logistics company is that company's employee.

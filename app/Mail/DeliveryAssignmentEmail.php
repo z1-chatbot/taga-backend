@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use App\Mail\Concerns\SendsFromMailbox;
 use App\Models\Order;
+use App\Models\OrderShipment;
 use App\Models\DeliverySetting;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
@@ -29,22 +30,39 @@ class DeliveryAssignmentEmail extends Mailable
     public $trackingNumber;
     public $shippingFeeAfterCommission;
 
+    /** The parcel being assigned. Null only for an order that has no shipments. */
+    public $shipment;
+
     /**
      * Create a new message instance.
      */
-    public function __construct(Order $order, string $recipientType, string $recipientName, ?string $trackingNumber = null)
-    {
+    public function __construct(
+        Order $order,
+        string $recipientType,
+        string $recipientName,
+        ?string $trackingNumber = null,
+        ?OrderShipment $shipment = null
+    ) {
         $this->order = $order;
         $this->recipientType = $recipientType;
         $this->recipientName = $recipientName;
         $this->trackingNumber = $trackingNumber;
+        $this->shipment = $shipment;
 
-        // The figure quoted here is produced by the same service that credits
-        // the earning on delivery. It used to be an independent percentage
-        // calculation, so a courier was promised one amount in this email and
-        // paid a different one when the parcel arrived.
+        /*
+         * The figure quoted here is produced by the same service that credits
+         * the earning on delivery. It used to be an independent percentage
+         * calculation, so a courier was promised one amount in this email and
+         * paid a different one when the parcel arrived.
+         *
+         * The parcel has to be passed for that promise to hold now that an
+         * order can be split: payment is per parcel, priced on that parcel's
+         * own route and its own share of the shipping fee. Quoting the order
+         * promised a courier the whole basket's fee for carrying part of it,
+         * and looked their agreed rate up against the wrong route.
+         */
         $this->shippingFeeAfterCommission = app(\App\Services\DeliveryEarningsService::class)
-            ->quote($order)['courier'];
+            ->quote($order, null, null, $shipment)['courier'];
     }
 
     /**

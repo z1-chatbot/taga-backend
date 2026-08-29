@@ -31,7 +31,23 @@ Order {{ $order->order_number }}
 Hello {{ $customerName }},
 
 {{ $intros[$statusType] ?? 'There is an update on your order.' }}
-@if($statusType === 'confirmed' && $order->delivery_code)
+@php
+    $codedParcels = $statusType === 'confirmed'
+        ? $order->shipments->filter(fn ($parcel) => $parcel->delivery_code)
+        : collect();
+@endphp
+@if($codedParcels->count() > 1)
+
+Your order comes from more than one pharmacy, so it arrives as separate
+deliveries, each with its own code.
+@foreach($codedParcels as $parcel)
+
+Delivery code - {{ $parcel->store->name ?? 'Parcel '.$loop->iteration }}: {{ $parcel->delivery_code }}
+@endforeach
+
+Read each rider the code for the parcel they are carrying, when it arrives and
+not before. It is how we know the right person received it.
+@elseif($statusType === 'confirmed' && $order->delivery_code)
 
 Delivery code: {{ $order->delivery_code }}
 

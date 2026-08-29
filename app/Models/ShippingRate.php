@@ -11,6 +11,7 @@ class ShippingRate extends Model
 
     protected $fillable = [
         'logistics_company_id',
+        'delivery_agent_id',
         'from_state',
         'to_state',
         'base_rate',
@@ -43,6 +44,11 @@ class ShippingRate extends Model
     }
 
     // Scopes
+    public function deliveryAgent()
+    {
+        return $this->belongsTo(DeliveryAgent::class);
+    }
+
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
@@ -50,12 +56,20 @@ class ShippingRate extends Model
 
     public function scopeGlobal($query)
     {
-        return $query->whereNull('logistics_company_id');
+        // Belongs to nobody in particular, so it applies to everybody. Both
+        // owner columns have to be null: a rider's rate is not a global one.
+        return $query->whereNull('logistics_company_id')->whereNull('delivery_agent_id');
     }
 
     public function scopeForCompany($query, $companyId)
     {
-        return $query->where('logistics_company_id', $companyId);
+        return $query->where('logistics_company_id', $companyId)->whereNull('delivery_agent_id');
+    }
+
+    /** Terms agreed with one rider, which no other courier gets. */
+    public function scopeForAgent($query, $agentId)
+    {
+        return $query->where('delivery_agent_id', $agentId);
     }
 
     public function scopeInterstate($query)
@@ -103,8 +117,30 @@ class ShippingRate extends Model
      * Find the best matching rate for a route.
      * Priority: company-specific rate > global rate > reverse route > intrastate fallback
      */
-    public static function findRate($fromState, $toState, $companyId = null)
+    /**
+     * The rate that applies to this journey, most specific first.
+     *
+     * A rider's own rate beats their company's, which beats the global one.
+     * Terms agreed with one courier are exactly that — the reason to record
+     * them is that they differ from what everyone else gets.
+     */
+    public static function findRate($fromState, $toState, $companyId = null, $agentId = null)
     {
+        // 0. Terms agreed with this rider in particular.
+        if ($agentId) {
+            $rate = self::active()->forAgent($agentId)->forRoute($fromState, $toState)->first();
+            if ($rate) return $rate;
+
+            // Same journey, stated the other way round.
+            $rate = self::active()->forAgent($agentId)->forRoute($toState, $fromState)->first();
+            if ($rate) return $rate;
+
+            if (strtolower($fromState) === strtolower($toState)) {
+                $rate = self::active()->forAgent($agentId)->intrastate()->where('from_state', $fromState)->first();
+                if ($rate) return $rate;
+            }
+        }
+
         // 1. Try company-specific rate for this route
         if ($companyId) {
             $rate = self::active()->forCompany($companyId)->forRoute($fromState, $toState)->first();

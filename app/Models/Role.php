@@ -29,6 +29,7 @@ class Role extends Model
     const SUPPORT = 'support';
     const INVENTORY = 'inventory';
     const MARKETING = 'marketing';
+    const PRACTITIONER = 'practitioner';
 
     /**
      * Get the users for this role.

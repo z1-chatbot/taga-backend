@@ -13,6 +13,7 @@ class AgentEarning extends Model
         'delivery_agent_id',
         'logistics_company_id',
         'order_id',
+        'shipment_id',
         'delivery_fee',
         'agreed_rate',
         'agent_commission',
@@ -48,6 +49,17 @@ class AgentEarning extends Model
     public function order()
     {
         return $this->belongsTo(Order::class);
+    }
+
+    /**
+     * The parcel this was earned carrying.
+     *
+     * Null on earnings written before an order could be split between
+     * pharmacies, when one order meant one journey.
+     */
+    public function shipment()
+    {
+        return $this->belongsTo(OrderShipment::class);
     }
 
     public function payout()

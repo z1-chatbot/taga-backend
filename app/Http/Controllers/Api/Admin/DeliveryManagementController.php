@@ -30,7 +30,7 @@ class DeliveryManagementController extends Controller
 
     public function getShippingRates(Request $request)
     {
-        $query = ShippingRate::with('logisticsCompany');
+        $query = ShippingRate::with(['logisticsCompany', 'deliveryAgent:id,name,phone']);
 
         // Filter by company if requested
         if ($request->has('logistics_company_id')) {
@@ -41,39 +41,89 @@ class DeliveryManagementController extends Controller
             }
         }
 
+        // Or by rider, for terms agreed with one courier.
+        if ($request->filled('delivery_agent_id')) {
+            $query->forAgent($request->delivery_agent_id);
+        }
+
         $rates = $query->orderBy('from_state')->orderBy('to_state')->get();
         return response()->json(['success' => true, 'data' => $rates]);
     }
 
-    public function createShippingRate(Request $request)
+    /**
+     * A rate belongs to one owner: an independent rider, a company, or nobody.
+     *
+     * "Nobody" is a global rate, which every courier on the route gets. Setting
+     * both a rider and a company would make the row unreadable — the lookup
+     * prefers the rider, so the company on it would be decoration that looked
+     * like a restriction.
+     *
+     * A rider working under a company cannot have one at all. They have no
+     * earnings of their own and cannot request a payout — their company settles
+     * with them directly — so a rate in their name would be a number nobody
+     * would ever be paid.
+     */
+    private function rateRules(): array
     {
-        $request->validate([
+        return [
             'from_state' => 'required|string',
             'to_state' => 'required|string',
-            'base_rate' => 'required|numeric',
-            'logistics_company_id' => 'nullable|integer|exists:logistics_companies,id',
-        ]);
+            'base_rate' => 'required|numeric|min:0',
+            'per_kg_rate' => 'nullable|numeric|min:0',
+            'estimated_days_min' => 'nullable|integer|min:0',
+            'estimated_days_max' => 'nullable|integer|min:0',
+            'logistics_company_id' => 'nullable|integer|exists:logistics_companies,id|prohibits:delivery_agent_id',
+            'delivery_agent_id' => [
+                'nullable',
+                'integer',
+                'exists:delivery_agents,id',
+                function ($attribute, $value, $fail) {
+                    $agent = \App\Models\DeliveryAgent::find($value);
+
+                    // Checked here rather than left to the admin console: the
+                    // console only lists independent riders, but the console is
+                    // not the only way to reach this endpoint.
+                    if ($agent && ! $agent->isPaidDirectly()) {
+                        $company = $agent->logisticsCompany->name ?? 'their logistics company';
+
+                        $fail("{$agent->name} rides for {$company}, who settles with them directly. "
+                            ."Set the rate for {$company} instead.");
+                    }
+                },
+            ],
+        ];
+    }
+
+    private function rateMessages(): array
+    {
+        return [
+            'logistics_company_id.prohibits' => 'A rate belongs either to a logistics company or to one rider, not both.',
+        ];
+    }
+
+    public function createShippingRate(Request $request)
+    {
+        $request->validate($this->rateRules(), $this->rateMessages());
 
         $rate = ShippingRate::create($request->all());
-        return response()->json(['success' => true, 'data' => $rate->load('logisticsCompany')]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $rate->load(['logisticsCompany', 'deliveryAgent:id,name,phone']),
+        ]);
     }
 
     public function updateShippingRate(Request $request, $id)
     {
-        $request->validate([
-            'from_state' => 'required|string',
-            'to_state' => 'required|string',
-            'base_rate' => 'required|numeric',
-            'per_kg_rate' => 'nullable|numeric',
-            'estimated_days_min' => 'nullable|integer',
-            'estimated_days_max' => 'nullable|integer',
-            'logistics_company_id' => 'nullable|integer|exists:logistics_companies,id',
-        ]);
+        $request->validate($this->rateRules(), $this->rateMessages());
 
         $rate = ShippingRate::findOrFail($id);
         $rate->update($request->all());
-        
-        return response()->json(['success' => true, 'data' => $rate->load('logisticsCompany')]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $rate->fresh()->load(['logisticsCompany', 'deliveryAgent:id,name,phone']),
+        ]);
     }
 
     public function deleteShippingRate($id)

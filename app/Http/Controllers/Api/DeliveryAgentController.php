@@ -138,14 +138,17 @@ class DeliveryAgentController extends Controller
 
         $order = $shipment->order;
 
-        // Verify delivery confirmation code when marking as delivered
-        if ($request->status === 'delivered' && $order) {
-            if ($order->delivery_code && $request->delivery_code !== $order->delivery_code) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid delivery confirmation code. Please ask the customer for the correct code.',
-                ], 422);
-            }
+        /*
+         * The code belongs to the parcel, not the order. On an order split
+         * between two pharmacies the customer holds a code per parcel, and
+         * checking against the order's would let either rider close out the
+         * other's delivery.
+         */
+        if ($request->status === 'delivered' && ! $shipment->verifyDeliveryCode($request->delivery_code)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid delivery confirmation code. Please ask the customer for the code for this parcel.',
+            ], 422);
         }
 
         $oldStatus = $order ? $order->status : null;
@@ -175,21 +178,36 @@ class DeliveryAgentController extends Controller
             'notes' => $request->notes,
         ]);
 
-        // Update the parent order status and timestamps
+        /*
+         * The order moves only when every parcel on it has reached this stage.
+         *
+         * An order split between two pharmacies is two parcels on two journeys,
+         * and one rider confirming their own delivery used to mark the whole
+         * order delivered — crediting the courier and settling a
+         * cash-on-delivery payment while the second pharmacy's parcel had not
+         * left the shop. For the single-parcel orders that are most of them
+         * this is true immediately and nothing changes.
+         */
+        $orderReached = $order && $order->allShipmentsReached($request->status);
+
         if ($order) {
             switch ($request->status) {
                 case 'picked_up':
-                    $order->update(['status' => 'picked_up', 'picked_up_at' => now()]);
+                    if ($orderReached) {
+                        $order->update(['status' => 'picked_up', 'picked_up_at' => now()]);
+                    }
                     break;
                 case 'arrived_at_hub':
                     // Interstate: agent delivered to logistics hub, agent's job is done
-                    $order->update(['status' => 'arrived_at_hub', 'delivery_agent_id' => null]);
                     // Save pickup agent ID before unassigning, then unassign for logistics to reassign new agent
                     $shipment->update([
                         'pickup_agent_id' => $agent->id, // Track who did the pickup
                         'delivery_agent_id' => null, // Unassign for next agent
                         'arrived_at_hub_at' => now()
                     ]);
+                    if ($orderReached) {
+                        $order->update(['status' => 'arrived_at_hub', 'delivery_agent_id' => null]);
+                    }
                     // Mark pickup agent as available again
                     $activeCount = $agent->shipments()->whereNotIn('status', ['delivered', 'cancelled'])->where('id', '!=', $shipment->id)->count();
                     if ($activeCount === 0) {
@@ -197,23 +215,32 @@ class DeliveryAgentController extends Controller
                     }
                     break;
                 case 'out_for_delivery':
-                    $order->update(['status' => 'out_for_delivery', 'out_for_delivery_at' => now()]);
+                    if ($orderReached) {
+                        $order->update(['status' => 'out_for_delivery', 'out_for_delivery_at' => now()]);
+                    }
                     break;
                 case 'delivered':
-                    $order->update([
-                        'status' => 'delivered',
-                        'delivered_at' => now(),
-                        'delivery_notes' => $request->notes,
-                    ]);
-
-                    // One service owns this calculation, decides who the payee is
-                    // and refuses to pay twice for the same journey — whichever
-                    // portal happens to confirm the delivery.
+                    // Credited against the parcel, not the order, and so always:
+                    // this rider carried this leg whether or not the rest of the
+                    // order has moved. One service owns the calculation, decides
+                    // who the payee is and refuses to pay twice for the same
+                    // journey — whichever portal confirms the delivery.
                     app(\App\Services\DeliveryEarningsService::class)
-                        ->creditForDelivery($order->fresh());
+                        ->creditForDelivery($order->fresh(), $shipment);
 
-                    if ($order->is_pay_on_delivery) {
-                        $order->update(['payment_status' => 'paid']);
+                    if ($orderReached) {
+                        $order->update([
+                            'status' => 'delivered',
+                            'delivered_at' => now(),
+                            'delivery_notes' => $request->notes,
+                        ]);
+
+                        // Cash on delivery settles when the last parcel lands —
+                        // the customer has not paid for the order until they
+                        // have received all of it.
+                        if ($order->is_pay_on_delivery) {
+                            $order->update(['payment_status' => 'paid']);
+                        }
                     }
 
                     // Mark agent as available if no other active shipments

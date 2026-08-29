@@ -64,12 +64,14 @@ class ConsultationRequest extends Model
     /**
      * The kinds of practitioner a shopper may ask for.
      *
-     * Deliberately a constant rather than a setting: the list is small, changes
-     * rarely, and every entry needs a matching person on the other side. Moving
-     * it into system settings later needs no schema change — the column is a
-     * plain string, validated against whatever this list holds.
+     * No longer the source of truth — that is the `practitioner_types` table,
+     * which an administrator manages, seeded from exactly this list. Kept only
+     * so a consultation stored before the table existed still renders if its
+     * row has since been withdrawn.
      *
      * Keyed slug => label.
+     *
+     * @deprecated Read PractitionerType instead.
      */
     const PRACTITIONER_TYPES = [
         'doctor' => 'Doctor (General Practitioner)',
@@ -86,15 +88,18 @@ class ConsultationRequest extends Model
 
     public static function practitionerTypeOptions(): array
     {
-        return collect(self::PRACTITIONER_TYPES)
-            ->map(fn (string $label, string $value) => ['value' => $value, 'label' => $label])
-            ->values()
-            ->all();
+        return PractitionerType::options();
+    }
+
+    /** The slugs a new consultation may name. */
+    public static function selectablePractitionerTypes(): array
+    {
+        return PractitionerType::selectableSlugs();
     }
 
     public function practitionerLabel(): string
     {
-        return self::PRACTITIONER_TYPES[$this->practitioner_type] ?? $this->practitioner_type;
+        return PractitionerType::labelFor($this->practitioner_type);
     }
 
     /**

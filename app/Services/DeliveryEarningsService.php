@@ -7,6 +7,7 @@ use App\Models\DeliveryAgent;
 use App\Models\DeliverySetting;
 use App\Models\LogisticsCompany;
 use App\Models\Order;
+use App\Models\OrderShipment;
 use App\Models\ShippingRate;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -25,36 +26,60 @@ use Illuminate\Support\Facades\Log;
 class DeliveryEarningsService
 {
     /**
-     * Credit whoever carried this order, once.
+     * Credit whoever carried this parcel, once.
      *
-     * Safe to call from every path that can mark an order delivered — the first
-     * call wins and later ones return the earning already on file.
+     * Safe to call from every path that can mark a delivery complete — the
+     * first call wins and later ones return the earning already on file.
+     *
+     * The unit of payment is the parcel, not the order. An order split between
+     * two pharmacies is two journeys by two riders, and keying the ledger on
+     * the order paid only whoever confirmed first: the second rider hit the
+     * unique index and was silently paid nothing. Passing no shipment keeps the
+     * old order-level behaviour, which is what the single-parcel orders that
+     * are most of them want.
      */
-    public function creditForDelivery(Order $order): ?AgentEarning
+    public function creditForDelivery(Order $order, ?OrderShipment $shipment = null): ?AgentEarning
     {
-        return DB::transaction(function () use ($order) {
+        return DB::transaction(function () use ($order, $shipment) {
             // Lock the order row so two portals confirming the same delivery at
             // the same moment cannot both find the ledger empty.
             Order::whereKey($order->id)->lockForUpdate()->first();
 
-            $existing = AgentEarning::where('order_id', $order->id)->first();
+            /*
+             * Already paid for this journey?
+             *
+             * Checked across the whole pickup run, not the single parcel. Two
+             * pharmacies in one city are collected in one round and charged as
+             * one journey, so they are settled once — paying per parcel would
+             * hand the courier two agreed rates out of a fee that covered one.
+             *
+             * `run()` is the parcel alone when it has no group, so a single
+             * pharmacy is unaffected.
+             */
+            $runIds = $shipment ? $shipment->run()->pluck('id')->all() : [];
+
+            $existing = AgentEarning::where('order_id', $order->id)
+                ->when($shipment, fn ($query) => $query->whereIn('shipment_id', $runIds))
+                ->first();
 
             if ($existing) {
                 Log::info('Delivery earning already recorded, not crediting again', [
                     'order_id' => $order->id,
+                    'shipment_id' => $shipment?->id,
+                    'pickup_group' => $shipment?->pickup_group,
                     'earning_id' => $existing->id,
                 ]);
 
                 return $existing;
             }
 
-            [$company, $agent] = $this->partiesFor($order);
+            [$company, $agent] = $this->partiesFor($order, $shipment);
 
             if (! $company && ! $agent) {
                 return null;
             }
 
-            $breakdown = $this->quote($order, $company, $agent);
+            $breakdown = $this->quote($order, $company, $agent, $shipment);
 
             if ($breakdown['courier'] <= 0) {
                 Log::warning('Delivery completed with nothing owed to the courier', [
@@ -72,6 +97,7 @@ class DeliveryEarningsService
                 'delivery_agent_id' => $agent?->id,
                 'logistics_company_id' => $company?->id,
                 'order_id' => $order->id,
+                'shipment_id' => $shipment?->id,
                 'delivery_fee' => $breakdown['customer_fee'],
                 'agreed_rate' => $breakdown['agreed_rate'],
                 'agent_commission' => $breakdown['courier'],
@@ -91,6 +117,7 @@ class DeliveryEarningsService
 
             Log::info('Delivery earning credited', [
                 'order_id' => $order->id,
+                'shipment_id' => $shipment?->id,
                 'payee' => $payee instanceof LogisticsCompany ? 'company' : 'agent',
                 'payee_id' => $payee->id,
                 'amount' => $breakdown['courier'],
@@ -111,15 +138,41 @@ class DeliveryEarningsService
      *
      * @return array{customer_fee: float, courier: float, platform: float, agreed_rate: float|null, courier_percentage: float, basis: string}
      */
-    public function quote(Order $order, ?LogisticsCompany $company = null, ?DeliveryAgent $agent = null): array
-    {
+    public function quote(
+        Order $order,
+        ?LogisticsCompany $company = null,
+        ?DeliveryAgent $agent = null,
+        ?OrderShipment $shipment = null
+    ): array {
         if (! $company && ! $agent) {
-            [$company, $agent] = $this->partiesFor($order);
+            [$company, $agent] = $this->partiesFor($order, $shipment);
         }
 
-        $customerFee = round((float) ($order->shipping_amount ?? 0), 2);
+        /*
+         * A journey is paid for out of its own share of the shipping fee.
+         * OrderShipmentService already split that fee across the shipments at
+         * checkout, so charging every rider on a split order the whole
+         * order's shipping would pay out several times what the customer paid.
+         *
+         * The unit is the pickup run rather than the parcel: two pharmacies in
+         * one city were charged as one journey and their shares add back up to
+         * it, so the courier making that one round is owed both shares.
+         */
+        $customerFee = $shipment
+            ? round((float) $shipment->run()->sum('shipping_fee'), 2)
+            : round((float) ($order->shipping_amount ?? 0), 2);
 
-        $agreedRate = $this->agreedRateFor($order, $company?->id ?? $agent?->logistics_company_id);
+        /*
+         * A rider's own rate is only theirs to earn when they are the one being
+         * paid. A rider working under a company is paid by that company, so it
+         * is the company's terms that apply to the journey.
+         */
+        $agreedRate = $this->agreedRateFor(
+            $order,
+            $company?->id ?? $agent?->logistics_company_id,
+            $shipment,
+            $company ? null : $agent?->id
+        );
 
         if ($agreedRate !== null && $agreedRate > 0) {
             // A rate on file is a contract with the courier. It is what they are
@@ -173,10 +226,13 @@ class DeliveryEarningsService
     /**
      * The rate agreed with this courier for the route the parcel travelled.
      */
-    private function agreedRateFor(Order $order, $companyId): ?float
+    private function agreedRateFor(Order $order, $companyId, ?OrderShipment $shipment = null, $agentId = null): ?float
     {
         $destination = ($order->shipping_address ?? [])['state'] ?? null;
-        $origin = $order->origin_state ?? $order->store?->state;
+
+        // The route is this parcel's route. Falling back to the order's store
+        // priced every leg of a split order as if it left the same pharmacy.
+        $origin = $shipment?->store?->state ?? $order->origin_state ?? $order->store?->state;
 
         if (! $origin) {
             $firstItem = $order->items()->with('product.store')->first();
@@ -187,7 +243,7 @@ class DeliveryEarningsService
             return null;
         }
 
-        $rate = ShippingRate::findRate($origin, $destination, $companyId);
+        $rate = ShippingRate::findRate($origin, $destination, $companyId, $agentId);
 
         return $rate ? (float) $rate->base_rate : null;
     }
@@ -195,11 +251,19 @@ class DeliveryEarningsService
     /**
      * @return array{0: ?LogisticsCompany, 1: ?DeliveryAgent}
      */
-    private function partiesFor(Order $order): array
+    private function partiesFor(Order $order, ?OrderShipment $shipment = null): array
     {
-        $agent = $order->delivery_agent_id ? DeliveryAgent::find($order->delivery_agent_id) : null;
+        /*
+         * The parcel names its own courier. The order carries a single
+         * delivery_agent_id that whichever assignment happened last overwrote,
+         * so on a split order it identifies at most one of the riders and pays
+         * the wrong one for the other's journey.
+         */
+        $agentId = $shipment?->delivery_agent_id ?? $order->delivery_agent_id;
+        $agent = $agentId ? DeliveryAgent::find($agentId) : null;
 
-        $companyId = $order->logistics_company_id ?: $agent?->logistics_company_id;
+        $companyId = $shipment?->logistics_company_id
+            ?: ($order->logistics_company_id ?: $agent?->logistics_company_id);
         $company = $companyId ? LogisticsCompany::find($companyId) : null;
 
         return [$company, $agent];

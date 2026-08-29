@@ -257,7 +257,18 @@ class LogisticsCompanyController extends Controller
             $storeState = null;
             $storeCity = null;
             
-            if ($order->store) {
+            /*
+             * This parcel's own pharmacy, not the order's.
+             *
+             * On an order split between two pharmacies the order-level store is
+             * only ever one of them, so assigning a rider to the second parcel
+             * listed riders who cover the first pharmacy's city — the wrong
+             * pickup address, silently marked as covered.
+             */
+            if ($shipment->store) {
+                $storeState = $shipment->store->state;
+                $storeCity = $shipment->store->city;
+            } elseif ($order->store) {
                 $storeState = $order->store->state;
                 $storeCity = $order->store->city;
             } else {
@@ -558,15 +569,18 @@ class LogisticsCompanyController extends Controller
               });
         })->findOrFail($shipmentId);
 
-        // Verify delivery confirmation code when marking as delivered
         $order = $shipment->order;
-        if ($request->status === 'delivered' && $order) {
-            if ($order->delivery_code && $request->delivery_code !== $order->delivery_code) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid delivery confirmation code. Please ask the customer for the correct code.',
-                ], 422);
-            }
+
+        /*
+         * The code belongs to the parcel, not the order — see
+         * OrderShipment::verifyDeliveryCode(). On a split order the customer
+         * holds one code per parcel and each releases only its own.
+         */
+        if ($request->status === 'delivered' && ! $shipment->verifyDeliveryCode($request->delivery_code)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid delivery confirmation code. Please ask the customer for the code for this parcel.',
+            ], 422);
         }
 
         /*
@@ -598,16 +612,27 @@ class LogisticsCompanyController extends Controller
         // Also update the parent order status and timestamps
         $oldStatus = $order ? $order->status : null;
 
+        /*
+         * The order is only as far along as its slowest parcel. See
+         * Order::allShipmentsReached() — for the single-parcel orders that are
+         * most of them this is true immediately and nothing changes.
+         */
+        $orderReached = $order && $order->allShipmentsReached($request->status);
+
         if ($order) {
             switch ($request->status) {
                 case 'picked_up':
-                    $order->update([
-                        'status' => 'picked_up',
-                        'picked_up_at' => now(),
-                    ]);
+                    if ($orderReached) {
+                        $order->update([
+                            'status' => 'picked_up',
+                            'picked_up_at' => now(),
+                        ]);
+                    }
                     break;
                 case 'arrived_at_hub':
-                    $order->update(['status' => 'arrived_at_hub']);
+                    if ($orderReached) {
+                        $order->update(['status' => 'arrived_at_hub']);
+                    }
                     // Unassign agent so a new one can be assigned for final leg
                     if ($shipment->delivery_agent_id) {
                         $agent = \App\Models\DeliveryAgent::find($shipment->delivery_agent_id);
@@ -624,30 +649,39 @@ class LogisticsCompanyController extends Controller
                     break;
                 case 'in_transit':
                     // Company transports package between states — no agent involved
-                    $order->update(['status' => 'in_transit', 'shipped_at' => $order->shipped_at ?? now()]);
+                    if ($orderReached) {
+                        $order->update(['status' => 'in_transit', 'shipped_at' => $order->shipped_at ?? now()]);
+                    }
                     break;
                 case 'out_for_delivery':
-                    $order->update([
-                        'status' => 'out_for_delivery',
-                        'out_for_delivery_at' => now(),
-                    ]);
+                    if ($orderReached) {
+                        $order->update([
+                            'status' => 'out_for_delivery',
+                            'out_for_delivery_at' => now(),
+                        ]);
+                    }
                     break;
                 case 'delivered':
-                    $order->update([
-                        'status' => 'delivered',
-                        'delivered_at' => now(),
-                        'delivery_notes' => $request->notes,
-                    ]);
-
-                    // One service owns this calculation, decides who the payee is
-                    // and refuses to pay twice for the same journey — whichever
-                    // portal happens to confirm the delivery.
+                    // Credited against the parcel, and so always: this courier
+                    // carried this leg whether or not the rest of the order has
+                    // moved. One service owns the calculation, decides who the
+                    // payee is and refuses to pay twice for the same journey.
                     app(\App\Services\DeliveryEarningsService::class)
-                        ->creditForDelivery($order->fresh());
+                        ->creditForDelivery($order->fresh(), $shipment);
 
-                    // If pay on delivery, mark payment as received
-                    if ($order->is_pay_on_delivery) {
-                        $order->update(['payment_status' => 'paid']);
+                    if ($orderReached) {
+                        $order->update([
+                            'status' => 'delivered',
+                            'delivered_at' => now(),
+                            'delivery_notes' => $request->notes,
+                        ]);
+
+                        // Cash on delivery settles when the last parcel lands —
+                        // the customer has not paid for the order until they
+                        // have received all of it.
+                        if ($order->is_pay_on_delivery) {
+                            $order->update(['payment_status' => 'paid']);
+                        }
                     }
                     break;
             }
@@ -758,8 +792,17 @@ class LogisticsCompanyController extends Controller
             $shipment->assignAgent($agent);
         }
 
-        // Also update the order's delivery_agent_id
-        $shipment->order->update(['delivery_agent_id' => $agent->id]);
+        /*
+         * The order carries a single delivery_agent_id, so it can only name the
+         * rider when there is one parcel to name them for. On a split order
+         * each assignment overwrote the last, leaving the order pointing at
+         * whichever rider was assigned most recently — a courier who is
+         * carrying one of the parcels and has nothing to do with the others.
+         * The parcel is the record; the order stays blank rather than wrong.
+         */
+        if ($shipment->order && $shipment->order->shipments()->count() === 1) {
+            $shipment->order->update(['delivery_agent_id' => $agent->id]);
+        }
 
         // Send email to agent
         try {
@@ -811,7 +854,10 @@ class LogisticsCompanyController extends Controller
 
         // Recent earnings
         $recentEarnings = \App\Models\AgentEarning::where('logistics_company_id', $company->id)
-            ->with(['order:id,order_number'])
+            // The parcel too: on an order split between pharmacies there are
+            // two earnings under one order number, and without the tracking
+            // number they are indistinguishable in the company's ledger.
+            ->with(['order:id,order_number', 'shipment:id,tracking_number'])
             ->latest()
             ->take(20)
             ->get()
@@ -819,6 +865,7 @@ class LogisticsCompanyController extends Controller
                 return [
                     'id' => $earning->id,
                     'order_number' => $earning->order->order_number ?? 'N/A',
+                    'tracking_number' => $earning->shipment->tracking_number ?? null,
                     'delivery_fee' => $earning->delivery_fee,
                     'commission' => $earning->agent_commission,
                     'platform_fee' => $earning->platform_commission,

@@ -45,6 +45,17 @@ class OrderController extends Controller
     private $_lastShippingUncovered = false;
 
     /**
+     * Where the last quoted delivery fee came from, one row per pharmacy.
+     *
+     * The fee arrived at checkout as a single number with nothing behind it, so
+     * neither a shopper nor an operator could tell whether ₦5,000 was one long
+     * leg or two short ones — and an operator wanting to know why could only
+     * read the log. Each row names the pharmacy, the route, the zone that
+     * priced it, and what that leg costs.
+     */
+    private $_lastShippingBreakdown = [];
+
+    /**
      * Pharmacy checkout guards.
      *
      * Two rules that a general-merchandise checkout never needed:
@@ -616,6 +627,10 @@ class OrderController extends Controller
             'cancelled_at' => now()
         ]);
 
+        // Call off the parcels too. Without this the pharmacies and any
+        // assigned courier were never told, and the job stayed on their list.
+        $order->syncShipmentsToStatus();
+
         // Restore stock quantities
         foreach ($order->items as $item) {
             $item->product->increment('stock_quantity', $item->quantity);
@@ -738,9 +753,17 @@ class OrderController extends Controller
         ]);
         
         $this->_lastShippingUncovered = false;
+        $this->_lastShippingBreakdown = [];
 
         if ($freeShippingThreshold > 0 && $subtotal >= $freeShippingThreshold) {
             $this->_lastShippingZoneId = null;
+            // Not "no cost" — a cost the platform has chosen to absorb, and the
+            // shopper is entitled to see that it was a threshold that did it.
+            $this->_lastShippingBreakdown = [[
+                'reason' => 'free_shipping_threshold',
+                'threshold' => (float) $freeShippingThreshold,
+                'fee' => 0.0,
+            ]];
             \Log::info('OrderController@calculateShipping - FREE SHIPPING triggered', [
                 'subtotal' => $subtotal,
                 'threshold' => $freeShippingThreshold
@@ -778,6 +801,14 @@ class OrderController extends Controller
         if ($shippingZone) {
             $fee = $shippingZone->calculateShippingFee();
             $this->_lastShippingZoneId = $shippingZone->id;
+            $this->_lastShippingBreakdown = [[
+                'store' => null,
+                'from' => $originState,
+                'to' => $destinationState,
+                'zone' => $shippingZone->name,
+                'fee' => (float) $fee,
+                'charged' => true,
+            ]];
             
             \Log::info('OrderController@calculateShipping - Shipping zone found', [
                 'zone_name' => $shippingZone->name,
@@ -822,27 +853,67 @@ class OrderController extends Controller
     }
     
     /**
-     * Calculate shipping for multi-store orders
-     * Groups items by store and uses the highest shipping fee
+     * Calculate shipping for multi-store orders.
+     *
+     * One journey per pharmacy, and the customer pays for each of them.
+     *
+     * This used to charge the dearest leg alone and let the rest ride along.
+     * That was a discount nobody had asked for, and it did not survive contact
+     * with how couriers are paid: each leg is settled at that courier's own
+     * agreed rate, so a Lagos-and-Port-Harcourt basket collected the Lagos fee
+     * and paid out both. The platform funded the gap on every genuinely split
+     * order, and the shortfall grew with distance.
+     *
+     * What is summed is pickup runs, not pharmacies. Two shops in the same
+     * city are one rider's round — collected together, driven together — so
+     * they are priced once. Charging twice would bill for a journey nobody
+     * makes. Different cities are genuinely different rounds and are charged
+     * separately, whether or not they share a state.
+     *
+     * So the fee follows *journeys*: never items, and not shops either.
      */
     private function calculateMultiStoreShipping($cartItems, $destinationState, $city = null, $postalCode = null)
     {
         // Group cart items by store
-        $storeGroups = $cartItems->groupBy(function($item) {
-            return $item->product->store_id ?? 0;
+        /*
+         * Grouped by where the parcels are collected, not by which shop sells
+         * them. A shop with no city on file falls back to its own id, so it
+         * stays a run of one rather than joining every other addressless
+         * pharmacy in an imaginary shared round.
+         */
+        $storeGroups = $cartItems->groupBy(function ($item) {
+            $store = $item->product->store ?? null;
+
+            return \App\Models\OrderShipment::pickupGroupFor($store)
+                ?? 'store:'.($item->product->store_id ?? 0);
         });
         
-        $maxShippingFee = 0;
+        $totalShippingFee = 0;
+        // The longest journey, kept for the delivery estimate and for the zone
+        // stamped on the order: an order is done when its slowest parcel
+        // arrives, so the slowest leg is the one that describes it.
+        $dearestFee = 0;
         $selectedZone = null;
+        $legs = [];
         
         \Log::info('OrderController@calculateMultiStoreShipping - Processing multi-store cart', [
-            'total_stores' => $storeGroups->count(),
+            'pickup_runs' => $storeGroups->count(),
             'destination' => $destinationState
         ]);
         
-        foreach ($storeGroups as $storeId => $items) {
+        foreach ($storeGroups as $pickupGroup => $items) {
             $firstItem = $items->first();
             $store = $firstItem->product->store ?? null;
+
+            // Every shop in this run is in the same city, so any of them names
+            // the journey. The rest are listed so the breakdown can say who is
+            // being collected from on it.
+            $shopsOnRun = $items
+                ->groupBy(fn ($item) => $item->product->store_id)
+                ->map(fn ($lines) => $lines->first()->product->store->name ?? null)
+                ->filter()
+                ->values()
+                ->all();
             
             $originState = \App\Models\SystemSetting::getValue(
                 \App\Models\SystemSetting::CATEGORY_GENERAL,
@@ -854,41 +925,57 @@ class OrderController extends Controller
                 $originState = $store->state;
             }
             
-            \Log::info('OrderController@calculateMultiStoreShipping - Store origin', [
-                'store_id' => $storeId,
-                'store_name' => $store->name ?? 'N/A',
+            \Log::info('OrderController@calculateMultiStoreShipping - Pickup run origin', [
+                'pickup_group' => $pickupGroup,
+                'shops' => $shopsOnRun,
                 'store_state' => $store->state ?? 'N/A',
+                'store_city' => $store->city ?? 'N/A',
                 'origin_used' => $originState,
-                'product_id' => $firstItem->product_id ?? $firstItem->product?->id ?? null
             ]);
             
             // Find shipping zone for this route
             $zone = ShippingZone::findByRoute($originState, $destinationState, $city, $postalCode);
-            
+
+            $legs[] = [
+                'pickup_group' => $pickupGroup,
+                // Every shop collected on this one round, so a shopper reading
+                // one fee against two pharmacies can see why it is one fee.
+                'stores' => $shopsOnRun,
+                'store' => $shopsOnRun ? implode(' and ', $shopsOnRun) : $store?->name,
+                // Null-safe: buy-now reaches here without a store loaded, and a
+                // product whose shop has been removed still has to price.
+                'from' => $store?->city ? $store->city.', '.$originState : $originState,
+                'to' => $destinationState,
+                'zone' => $zone?->name,
+                'fee' => $zone ? (float) $zone->calculateShippingFee() : null,
+            ];
+
             if ($zone) {
                 $fee = $zone->calculateShippingFee();
                 
-                \Log::info('OrderController@calculateMultiStoreShipping - Zone found for store', [
-                    'store_id' => $storeId,
-                    'store_name' => $store->name ?? 'N/A',
+                \Log::info('OrderController@calculateMultiStoreShipping - Zone found for run', [
+                    'pickup_group' => $pickupGroup,
+                    'shops' => $shopsOnRun,
                     'origin' => $originState,
                     'destination' => $destinationState,
                     'zone_name' => $zone->name,
                     'fee' => $fee
                 ]);
                 
-                // Use the highest shipping fee
-                if ($fee > $maxShippingFee) {
-                    $maxShippingFee = $fee;
+                $totalShippingFee += $fee;
+
+                if ($fee > $dearestFee) {
+                    $dearestFee = $fee;
                     $selectedZone = $zone;
                 }
             }
         }
         
         if ($selectedZone) {
-            \Log::info('OrderController@calculateMultiStoreShipping - Using highest shipping fee', [
-                'selected_zone' => $selectedZone->name,
-                'fee' => $maxShippingFee
+            \Log::info('OrderController@calculateMultiStoreShipping - Charging every leg', [
+                'legs' => count($legs),
+                'total' => $totalShippingFee,
+                'longest_leg_zone' => $selectedZone->name,
             ]);
             $this->_lastShippingZoneId = $selectedZone->id;
         } else {
@@ -897,7 +984,17 @@ class OrderController extends Controller
             $this->_lastShippingUncovered = true;
         }
 
-        return $maxShippingFee;
+        // Every priced leg is charged. An unpriced one is not a free delivery —
+        // it means no zone covers that route, and `guardShippingCoverage`
+        // refuses the order rather than letting it through at nothing.
+
+        foreach ($legs as $index => $leg) {
+            $legs[$index]['charged'] = $leg['fee'] !== null;
+        }
+
+        $this->_lastShippingBreakdown = $legs;
+
+        return $totalShippingFee;
     }
 
     /**
@@ -1117,7 +1214,7 @@ class OrderController extends Controller
     public function adminShow($id): JsonResponse
     {
         $user = auth()->user();
-        $order = Order::with(['user', 'items.product.store', 'items.prescription.reviewer', 'coupon', 'saleEvent', 'paymentTransactions', 'shipments.deliveryAgent.logisticsCompany', 'deliveryAgent.logisticsCompany', 'logisticsCompany', 'trackingEvents'])
+        $order = Order::with(['user', 'items.product.store', 'items.prescription.reviewer', 'coupon', 'saleEvent', 'paymentTransactions', 'shipments.store', 'shipments.deliveryAgent.logisticsCompany', 'shipments.logisticsCompany', 'deliveryAgent.logisticsCompany', 'logisticsCompany', 'trackingEvents'])
                      ->findOrFail($id);
 
         // Anyone who is not a platform admin sees only orders carrying their own
@@ -1143,6 +1240,13 @@ class OrderController extends Controller
 
             $order->setRelation('items', $order->items->filter(
                 fn ($item) => $item->product && (int) $item->product->store_id === $storeId
+            )->values());
+
+            // And only its own parcel. An order split between two pharmacies
+            // carries a shipment each, and the other one's tracking number,
+            // rider and delivery window are not this pharmacy's business.
+            $order->setRelation('shipments', $order->shipments->filter(
+                fn ($shipment) => (int) $shipment->store_id === $storeId
             )->values());
         }
 
@@ -1902,18 +2006,48 @@ class OrderController extends Controller
      * delivery_agent_id and so saw one of them, tracking read the other, and
      * the shipping fee was recorded twice.
      *
+     * With no id given it takes the first parcel still in play — which is the
+     * only parcel, for the single-pharmacy orders that are most of them. An
+     * order split between pharmacies must name the one it means: dispatching
+     * "the order" silently assigned a rider to the lowest shipment id and left
+     * the other pharmacy's parcel at 'pending' with nobody coming for it, while
+     * the order itself read as handled.
+     *
      * Only creates a shipment when the order genuinely has none — an order
      * placed before shipments existed, or one whose creation failed.
      */
-    private function shipmentForAssignment(Order $order, array $attributes): \App\Models\OrderShipment
+    private function shipmentForAssignment(Order $order, array $attributes, $shipmentId = null): \App\Models\OrderShipment
     {
         $shipment = \App\Models\OrderShipment::where('order_id', $order->id)
+            ->when($shipmentId, fn ($query) => $query->whereKey($shipmentId))
             ->whereNotIn('status', ['delivered', 'returned', 'failed'])
             ->orderBy('id')
             ->first();
 
+        if ($shipmentId && ! $shipment) {
+            throw new \Illuminate\Database\Eloquent\ModelNotFoundException(
+                'That parcel is not on this order, or has already completed its journey.'
+            );
+        }
+
         if ($shipment) {
-            $shipment->update($attributes);
+            /*
+             * The whole run goes to one courier, not just the parcel that was
+             * clicked.
+             *
+             * Parcels collected in the same city are charged as one journey, so
+             * they have to be *made* one journey. Letting an operator give them
+             * to two different couriers would mean paying two agreed rates out
+             * of a fee that only covered one — which is the hole that pricing
+             * per run was meant to close, reopened at the assignment screen.
+             *
+             * `run()` is the parcel alone when it has no group, so a single
+             * pharmacy behaves exactly as it did.
+             */
+            $shipment->run()
+                ->whereNotIn('status', \App\Models\OrderShipment::SETTLED_STATUSES)
+                ->where('status', '!=', 'delivered')
+                ->update($attributes);
 
             return $shipment->fresh();
         }
@@ -1938,14 +2072,121 @@ class OrderController extends Controller
         ], $attributes));
     }
 
+    /**
+     * Where a parcel is collected from: its own pharmacy, else the order's.
+     *
+     * Shared by assignment and by the courier list so the two cannot disagree
+     * about which journey is being arranged.
+     *
+     * @return array{0: ?string, 1: ?string}  [state, city]
+     */
+    private function originFor(Order $order, $shipmentId = null): array
+    {
+        $shipment = $shipmentId
+            ? \App\Models\OrderShipment::with('store')->where('order_id', $order->id)->find($shipmentId)
+            : null;
+
+        if ($shipment && $shipment->store) {
+            return [$shipment->store->state, $shipment->store->city];
+        }
+
+        if ($order->store) {
+            return [$order->store->state, $order->store->city];
+        }
+
+        $firstItem = $order->items()->with('product.store')->first();
+
+        if ($firstItem && $firstItem->product && $firstItem->product->store) {
+            return [$firstItem->product->store->state, $firstItem->product->store->city];
+        }
+
+        return [null, null];
+    }
+
+    /** Whether this journey crosses state lines. */
+    private function isInterstateLeg(?string $originState, ?string $destinationState): bool
+    {
+        // An unknown origin is treated as interstate: it is the cautious
+        // reading, and it routes the parcel through a logistics company rather
+        // than handing an unknown pickup to an independent rider.
+        return ! $originState
+            || ! $destinationState
+            || strcasecmp(trim($originState), trim($destinationState)) !== 0;
+    }
+
     public function assignDeliveryAgent(Request $request, $id): JsonResponse
     {
         $request->validate([
             'delivery_agent_id' => 'required|integer',
-            'type' => 'required|in:agent,company'
+            'type' => 'required|in:agent,company',
+            // Optional so that every existing caller — and every
+            // single-pharmacy order — keeps working unchanged.
+            'shipment_id' => 'nullable|integer',
         ]);
 
         $order = Order::findOrFail($id);
+        $shipmentId = $request->input('shipment_id');
+
+        /*
+         * Nothing is dispatched for an order whose prescription has not been
+         * cleared — checked here, explicitly, before anything is written.
+         *
+         * This used to hold by accident: the assignment wrote the order's
+         * status to 'assigned_to_agent' in the same update as the rider, and
+         * the gate in Order::booted() threw on the status, taking the rider
+         * with it. Splitting the status off — so a two-pharmacy order is not
+         * marked assigned until both parcels are — removed the accident, and a
+         * held order could be given a rider in silence. State the rule instead
+         * of leaning on a side effect of another write.
+         */
+        /*
+         * Nothing is dispatched for an order that is over. The parcels of a
+         * cancelled order are called off with it, but an order cancelled before
+         * that rule existed still has live-looking parcels, and assigning a
+         * courier to one sends somebody to collect an order that no longer
+         * exists.
+         */
+        if (in_array($order->status, [Order::STATUS_CANCELLED, Order::STATUS_REFUNDED], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => "This order is {$order->status} and cannot be dispatched.",
+                'code' => 'order_closed',
+            ], 422);
+        }
+
+        if (! $order->isClearedForDispatch()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This order contains prescription medicine that has not been approved. '
+                    ."Prescription status: {$order->prescription_status}.",
+                'code' => 'prescription_not_cleared',
+            ], 422);
+        }
+
+        /*
+         * An order collected from more than one place must be dispatched one
+         * run at a time. Refusing here rather than quietly picking one is the
+         * point: the old behaviour assigned the lowest shipment id and left the
+         * second pharmacy's parcel with nobody coming for it, and nothing in
+         * the console said so.
+         *
+         * Counted in runs, not parcels — two pharmacies in the same city travel
+         * together, so naming either one dispatches both and there is nothing
+         * for an operator to choose between.
+         */
+        $runCount = $order->shipments()
+            ->selectRaw('COUNT(DISTINCT COALESCE(pickup_group, CONCAT(\'id:\', id))) as total')
+            ->value('total');
+
+        if (! $shipmentId && $runCount > 1) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This order is collected from more than one place. Assign each pickup separately.',
+                'code' => 'shipment_required',
+                'data' => ['shipments' => $order->shipments()->with('store:id,name,state,city')->get()],
+            ], 422);
+        }
+
         $shippingAddress = $order->shipping_address;
         $state = $shippingAddress['state'] ?? null;
         $city = $shippingAddress['city'] ?? null;
@@ -1954,10 +2195,47 @@ class OrderController extends Controller
             // Assign independent delivery agent
             $agent = DeliveryAgent::findOrFail($request->delivery_agent_id);
 
-            if (!$agent->coversArea($state, $city)) {
+            [$originState, $originCity] = $this->originFor($order, $shipmentId);
+            $isInterstate = $this->isInterstateLeg($originState, $state);
+
+            /*
+             * An independent rider works within one state.
+             *
+             * Crossing state lines is a relay — collected at the origin, run to
+             * a hub, handed to a second rider for the final mile — and only a
+             * logistics company has the people in both places to do it. A lone
+             * rider given an interstate parcel either drives the whole way or
+             * the parcel stops moving, and nothing here said no: the check was
+             * against the delivery address alone, so a rider covering Lagos was
+             * accepted for a parcel sitting in a pharmacy in Enugu.
+             */
+            if ($isInterstate && ! $agent->logistics_company_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $originState
+                        ? "This parcel travels from {$originState} to {$state}. Interstate deliveries go through a logistics company, not an independent rider."
+                        : 'Interstate deliveries go through a logistics company, not an independent rider.',
+                    'code' => 'interstate_needs_company',
+                ], 422);
+            }
+
+            if (! $agent->coversArea($state, $city)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'This delivery agent does not service the order delivery location'
+                ], 422);
+            }
+
+            // They also have to be able to reach the pharmacy. Checking only
+            // the destination accepted a rider who covers where the parcel is
+            // going but not the city they would have to collect it from.
+            if ($originState && ! $agent->coversArea($originState, $originCity)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $originCity
+                        ? "This delivery agent does not cover {$originCity}, where this parcel is collected from."
+                        : 'This delivery agent does not cover the pickup location for this parcel.',
+                    'code' => 'agent_cannot_collect',
                 ], 422);
             }
 
@@ -1965,7 +2243,6 @@ class OrderController extends Controller
                 'delivery_agent_id' => $agent->id,
                 'logistics_company_id' => $agent->logistics_company_id,
                 'assigned_at' => now(),
-                'status' => 'assigned_to_agent',
             ]);
 
             $shipment = $this->shipmentForAssignment($order, [
@@ -1973,7 +2250,7 @@ class OrderController extends Controller
                 'delivery_agent_id' => $agent->id,
                 'status' => 'assigned_to_agent',
                 'assigned_at' => now(),
-            ]);
+            ], $shipmentId);
 
             // Update order with tracking number if not set
             if (!$order->tracking_number) {
@@ -1999,7 +2276,6 @@ class OrderController extends Controller
                 'logistics_company_id' => $company->id,
                 'delivery_agent_id' => null,
                 'assigned_at' => now(),
-                'status' => 'assigned_to_agent',
             ]);
 
             $shipment = $this->shipmentForAssignment($order, [
@@ -2007,7 +2283,7 @@ class OrderController extends Controller
                 'delivery_agent_id' => null,
                 'status' => 'assigned_to_agent',
                 'assigned_at' => now(),
-            ]);
+            ], $shipmentId);
 
             // Update order with tracking number if not set
             if (!$order->tracking_number) {
@@ -2015,6 +2291,16 @@ class OrderController extends Controller
             }
 
             $message = 'Logistics company assigned successfully';
+        }
+
+        /*
+         * The order counts as assigned once every parcel on it is. Moving it on
+         * the first assignment made a split order look dispatched while a
+         * second pharmacy's parcel still had nobody coming for it — and the
+         * "Assign" prompt disappeared from the console along with it.
+         */
+        if ($order->fresh()->allShipmentsReached('assigned_to_agent')) {
+            $order->update(['status' => 'assigned_to_agent']);
         }
 
         // Create tracking event for assignment
@@ -2039,14 +2325,17 @@ class OrderController extends Controller
                 $emailTo = $company->admin_email ?? $company->contact_email;
                 if ($emailTo) {
                     Mail::to($emailTo)->send(new DeliveryAssignmentEmail(
-                        $order, 'company', $company->name, $shipment->tracking_number ?? $order->tracking_number
+                        $order, 'company', $company->name, $shipment->tracking_number ?? $order->tracking_number, $shipment
                     ));
                 }
             } elseif ($request->type === 'agent' && isset($agent)) {
                 $emailTo = $agent->email;
                 if ($emailTo) {
+                    // This parcel's tracking number, not the order's — the
+                    // order carries whichever shipment happened to set it
+                    // first, which on a split order is somebody else's parcel.
                     Mail::to($emailTo)->send(new DeliveryAssignmentEmail(
-                        $order, 'agent', $agent->name, $order->tracking_number
+                        $order, 'agent', $agent->name, $shipment->tracking_number ?? $order->tracking_number, $shipment
                     ));
                 }
             }
@@ -2077,12 +2366,37 @@ class OrderController extends Controller
     /**
      * Admin: Get available delivery agents and logistics companies for an order
      *
-     * Interstate: Show logistics companies that cover BOTH origin (store state+city) AND destination (shipping state+city)
-     * Intrastate: Show independent delivery agents (not under any company) that cover the destination area
+     * Interstate: logistics companies only, covering BOTH origin (store
+     * state+city) AND destination (shipping state+city). An independent rider
+     * cannot run a relay through a hub, so they are not offered.
+     *
+     * Intrastate: logistics companies covering the destination, *plus*
+     * independent riders covering both ends. A company delivers within a state
+     * too — through its own in-city dispatch riders — so it is offered for
+     * every leg, and only the origin check is dropped: a company that covers
+     * the destination reaches the pickup through its own people.
+     *
+     * The line that used to sit here read "Intrastate: show independent
+     * delivery agents", which described half of what the code does and made
+     * companies look interstate-only. They are not.
      */
-    public function getAvailableAgents($id): JsonResponse
+    public function getAvailableAgents(Request $request, $id): JsonResponse
     {
         $order = Order::with('store')->findOrFail($id);
+
+        /*
+         * Which parcel this is for. The origin decides whether the journey is
+         * interstate and therefore whether the console offers logistics
+         * companies or independent riders, and on an order split between two
+         * pharmacies the order-level store is only ever one of them — so the
+         * second parcel's leg was classified, and its couriers filtered, by the
+         * first pharmacy's address.
+         */
+        $shipment = $request->filled('shipment_id')
+            ? \App\Models\OrderShipment::with('store')
+                ->where('order_id', $order->id)
+                ->find($request->input('shipment_id'))
+            : null;
 
         $shippingAddress = $order->shipping_address;
         $destinationState = $shippingAddress['state'] ?? null;
@@ -2095,28 +2409,16 @@ class OrderController extends Controller
             ], 422);
         }
 
-        // Origin: store location (from order's store, or from the first item's product store)
-        $originState = null;
-        $originCity = null;
-        
-        if ($order->store) {
-            $originState = $order->store->state;
-            $originCity = $order->store->city;
-        } else {
-            // Fallback: get store from the first order item's product
-            $firstItem = $order->items()->with('product.store')->first();
-            if ($firstItem && $firstItem->product && $firstItem->product->store) {
-                $originState = $firstItem->product->store->state;
-                $originCity = $firstItem->product->store->city;
-            }
-        }
+        // Origin: this parcel's pharmacy, else the order's, else the first
+        // item's product store.
+        [$originState, $originCity] = $this->originFor($order, $shipment?->id);
 
         $availableOptions = [];
 
-        // Determine if this is interstate delivery
-        $isInterstate = !$originState || (strcasecmp(trim($originState), trim($destinationState)) !== 0);
+        $isInterstate = $this->isInterstateLeg($originState, $destinationState);
 
-        // Always show logistics companies that cover the destination
+        // Logistics companies for every leg, interstate or not — they run
+        // in-city deliveries through their own dispatch riders.
         $logisticsCompanies = \App\Models\LogisticsCompany::where('is_active', true)
             ->get()
             ->filter(function ($company) use ($originState, $originCity, $destinationState, $destinationCity, $isInterstate) {
@@ -2143,13 +2445,30 @@ class OrderController extends Controller
             ];
         }
 
-        // Always show independent agents that cover the destination
-        $independentAgents = DeliveryAgent::available()
-            ->whereNull('logistics_company_id')
-            ->get()
-            ->filter(function ($agent) use ($destinationState, $destinationCity) {
-                return $agent->coversArea($destinationState, $destinationCity);
-            });
+        /*
+         * Independent riders, and only for a journey inside one state.
+         *
+         * They were offered for every leg, filtered by the delivery address
+         * alone — so a rider covering Lagos appeared as an option for a parcel
+         * sitting in a pharmacy in Enugu, with no way to collect it. Crossing
+         * state lines is a relay through a hub, which needs a company with
+         * people at both ends; within a state one rider does the whole job.
+         *
+         * They must also cover the pickup, not just the drop-off. Lagos is one
+         * state and a rider who works Ikeja cannot collect from Epe.
+         */
+        $independentAgents = $isInterstate
+            ? collect()
+            : DeliveryAgent::available()
+                ->whereNull('logistics_company_id')
+                ->get()
+                ->filter(function ($agent) use ($originState, $originCity, $destinationState, $destinationCity) {
+                    if (! $agent->coversArea($destinationState, $destinationCity)) {
+                        return false;
+                    }
+
+                    return ! $originState || $agent->coversArea($originState, $originCity);
+                });
 
         foreach ($independentAgents as $agent) {
             $availableOptions[] = [
@@ -2348,6 +2667,9 @@ class OrderController extends Controller
                 'shipping_fee' => (float) $fee,
                 'is_covered' => $isCovered,
                 'zone_name' => $zone?->name,
+                // What the fee is made of, so the number on the checkout page
+                // can be explained rather than merely displayed.
+                'breakdown' => $this->_lastShippingBreakdown,
                 'destination_state' => $request->state,
                 'estimated_delivery_days' => $zone?->estimated_delivery_days,
                 // A zero fee on an address we cannot reach is not free delivery.

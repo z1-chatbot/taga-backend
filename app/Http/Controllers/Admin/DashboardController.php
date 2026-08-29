@@ -320,18 +320,71 @@ class DashboardController extends Controller
     /**
      * Get sales analytics
      */
+    /**
+     * The window a report covers.
+     *
+     * Every figure on the insights page used to be "the last N days", which
+     * answers how trade is going but not how it went — there was no way to ask
+     * about a campaign week, a month that has closed, or the same fortnight a
+     * year ago. An explicit `from`/`to` pair now does that, and `period` stays
+     * as the shorthand so a caller that sends neither keeps the last 30 days.
+     *
+     * Both ends are inclusive whole days: `to=2026-08-28` means up to the last
+     * second of the 28th, not midnight at its start, which would silently drop
+     * a day of trade.
+     *
+     * Returns the window, the window of equal length immediately before it (so
+     * growth compares like with like), and the day count.
+     */
+    private function reportWindow(): array
+    {
+        $from = request('from');
+        $to = request('to');
+
+        if ($from || $to) {
+            // One end alone is a legitimate question — "since we launched",
+            // "everything up to the audit". The other end fills itself in.
+            $start = $from ? Carbon::parse($from)->startOfDay() : Carbon::parse($to)->startOfDay()->subDays(29);
+            $end = $to ? Carbon::parse($to)->endOfDay() : Carbon::now()->endOfDay();
+
+            // Handed to us backwards, which is a slip rather than a request for
+            // an empty report.
+            if ($start->greaterThan($end)) {
+                [$start, $end] = [$end->copy()->startOfDay(), $start->copy()->endOfDay()];
+            }
+        } else {
+            $days = max(1, (int) request('period', 30));
+            $end = Carbon::now();
+            $start = Carbon::now()->subDays($days);
+        }
+
+        // Whole days, and never zero — a single-day window compares against the
+        // day before it rather than against itself.
+        $days = max(1, (int) ceil($start->diffInDays($end)));
+
+        return [
+            'start' => $start,
+            'end' => $end,
+            'days' => $days,
+            'previous_start' => $start->copy()->subDays($days),
+            'previous_end' => $start->copy(),
+        ];
+    }
+
     public function salesAnalytics(): JsonResponse
     {
         if ($denied = $this->denyNonPlatformAdmin()) {
             return $denied;
         }
 
-        $period = request('period', '30'); // days
-        $startDate = Carbon::now()->subDays($period);
+        $window = $this->reportWindow();
+        $startDate = $window['start'];
+        $endDate = $window['end'];
+        $period = $window['days'];
 
         // Sales by period
         $salesData = Order::where('payment_status', Order::PAYMENT_PAID)
-                         ->where('created_at', '>=', $startDate)
+                         ->whereBetween('created_at', [$startDate, $endDate])
                          ->select(
                              DB::raw('DATE(created_at) as date'),
                              DB::raw('SUM(total_amount) as revenue'),
@@ -348,7 +401,7 @@ class DashboardController extends Controller
                          ->join('products', 'order_items.product_id', '=', 'products.id')
                          ->join('categories', 'products.category_id', '=', 'categories.id')
                          ->where('orders.payment_status', Order::PAYMENT_PAID)
-                         ->where('orders.created_at', '>=', $startDate)
+                         ->whereBetween('orders.created_at', [$startDate, $endDate])
                          ->select(
                              'categories.name as name',
                              'categories.slug as slug',
@@ -369,7 +422,7 @@ class DashboardController extends Controller
 
         // Payment method statistics
         $paymentMethods = PaymentTransaction::where('status', PaymentTransaction::STATUS_SUCCESS)
-                                          ->where('created_at', '>=', $startDate)
+                                          ->whereBetween('created_at', [$startDate, $endDate])
                                           ->select('gateway', DB::raw('COUNT(*) as count'), DB::raw('SUM(amount) as total'))
                                           ->groupBy('gateway')
                                           ->get();
@@ -386,7 +439,7 @@ class DashboardController extends Controller
          * abandoned checkout made someone a repeat customer.
          */
         $buyerIds = Order::where('payment_status', Order::PAYMENT_PAID)
-                         ->where('created_at', '>=', $startDate)
+                         ->whereBetween('created_at', [$startDate, $endDate])
                          ->whereNotNull('user_id')
                          ->distinct()
                          ->pluck('user_id');
@@ -412,7 +465,7 @@ class DashboardController extends Controller
                              ->join('order_items', 'products.id', '=', 'order_items.product_id')
                              ->join('orders', 'order_items.order_id', '=', 'orders.id')
                              ->where('orders.payment_status', Order::PAYMENT_PAID)
-                             ->where('orders.created_at', '>=', $startDate)
+                             ->whereBetween('orders.created_at', [$startDate, $endDate])
                              ->selectRaw('SUM(order_items.quantity) as total_sold, SUM(order_items.total) as revenue')
                              ->groupBy('products.id', 'products.name', 'products.price', 'products.category_id', 'products.stock_quantity')
                              ->orderBy('total_sold', 'desc')
@@ -437,8 +490,8 @@ class DashboardController extends Controller
                              });
 
         // Calculate growth indicators based on actual data
-        $previousPeriodStart = Carbon::now()->subDays($period * 2);
-        $previousPeriodEnd = $startDate;
+        $previousPeriodStart = $window['previous_start'];
+        $previousPeriodEnd = $window['previous_end'];
         
         $previousRevenue = Order::where('payment_status', Order::PAYMENT_PAID)
                                 ->whereBetween('created_at', [$previousPeriodStart, $previousPeriodEnd])
@@ -452,7 +505,7 @@ class DashboardController extends Controller
                                 ->count();
         
         $currentCustomers = User::where('role', 'customer')
-                               ->where('created_at', '>=', $startDate)
+                               ->whereBetween('created_at', [$startDate, $endDate])
                                ->count();
         
         $customerGrowth = $previousCustomers > 0 ? (($currentCustomers - $previousCustomers) / $previousCustomers) * 100 : 0;
@@ -479,7 +532,7 @@ class DashboardController extends Controller
          * standing on one order.
          */
         $paidInPeriod = fn () => Order::where('payment_status', Order::PAYMENT_PAID)
-                                      ->where('created_at', '>=', $startDate);
+                                      ->whereBetween('created_at', [$startDate, $endDate]);
 
         $peakHourRow = $paidInPeriod()
             ->select(DB::raw('HOUR(created_at) as hour'), DB::raw('COUNT(*) as orders'))
@@ -520,6 +573,10 @@ class DashboardController extends Controller
             'success' => true,
             'data' => [
                 'period' => $period,
+                // Echoed back so the page labels what it is showing rather than
+                // assume it got the window it asked for.
+                'from' => $startDate->toDateString(),
+                'to' => $endDate->toDateString(),
                 'sales_timeline' => $salesData,
                 'category_performance' => $categoryPerformance,
                 'payment_methods' => $paymentMethods,
@@ -619,12 +676,14 @@ class DashboardController extends Controller
             return $denied;
         }
 
-        $period = request('period', '30');
-        $startDate = Carbon::now()->subDays($period);
+        $window = $this->reportWindow();
+        $startDate = $window['start'];
+        $endDate = $window['end'];
+        $period = $window['days'];
 
         // Customer acquisition
         $newCustomers = User::where('role', 'customer')
-                           ->where('created_at', '>=', $startDate)
+                           ->whereBetween('created_at', [$startDate, $endDate])
                            ->select(
                                DB::raw('DATE(created_at) as date'),
                                DB::raw('COUNT(*) as new_customers')
@@ -659,6 +718,8 @@ class DashboardController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
+                'from' => $startDate->toDateString(),
+                'to' => $endDate->toDateString(),
                 'acquisition_timeline' => $newCustomers,
                 'top_customers' => $topCustomers,
                 'average_lifetime_value' => $avgLifetimeValue,

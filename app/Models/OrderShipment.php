@@ -13,7 +13,9 @@ class OrderShipment extends Model
     protected $fillable = [
         'order_id',
         'store_id',
+        'pickup_group',
         'tracking_number',
+        'delivery_code',
         'logistics_company_id',
         'delivery_agent_id',
         'pickup_agent_id',
@@ -184,6 +186,119 @@ class OrderShipment extends Model
             'agent_id' => $agent->id,
             'agent_name' => $agent->name
         ]);
+    }
+
+    /**
+     * The status ranks, least to most advanced.
+     *
+     * Used to answer "has every parcel on this order reached this point yet",
+     * which is the only safe basis for moving the order itself: one rider
+     * delivering their parcel does not make the order delivered when a second
+     * pharmacy has not even dispatched.
+     */
+    public const STATUS_RANK = [
+        'pending' => 0,
+        'shop_preparing' => 1,
+        'ready_for_pickup' => 2,
+        'assigned_to_agent' => 3,
+        'picked_up' => 4,
+        'arrived_at_hub' => 5,
+        'in_transit' => 6,
+        'out_for_delivery' => 7,
+        'delivered' => 8,
+    ];
+
+    /** Statuses that end a shipment's journey without delivering it. */
+    public const SETTLED_STATUSES = ['failed', 'returned', 'cancelled'];
+
+    /**
+     * Where a parcel is collected from, as a grouping key.
+     *
+     * Two pharmacies in the same city are one rider's round: they are collected
+     * together, driven together, and charged once. State alone is too coarse —
+     * Ikeja and Epe are both Lagos and a hundred kilometres apart — and a
+     * street address is too fine to ever match. City is the line.
+     *
+     * Null when the shop has no city on file. That parcel is then handled on
+     * its own, which is the safe answer: grouping on a blank would sweep every
+     * addressless pharmacy in the basket into one imaginary run.
+     */
+    public static function pickupGroupFor(?Store $store): ?string
+    {
+        $state = trim((string) ($store->state ?? ''));
+        $city = trim((string) ($store->city ?? ''));
+
+        if ($state === '' || $city === '') {
+            return null;
+        }
+
+        return mb_strtolower($state.'|'.$city);
+    }
+
+    /**
+     * The other parcels on this order collected in the same round, this one
+     * included.
+     *
+     * An ungrouped parcel is a run of one — never a run of "everything else
+     * that is also ungrouped", which is why the null case is handled here
+     * rather than left to a `where` on a null column.
+     */
+    public function run()
+    {
+        $query = static::where('order_id', $this->order_id);
+
+        return $this->pickup_group === null
+            ? $query->whereKey($this->id)
+            : $query->where('pickup_group', $this->pickup_group);
+    }
+
+    public function rank(): int
+    {
+        return self::STATUS_RANK[$this->status] ?? 0;
+    }
+
+    /**
+     * The confirmation code for this parcel, minted once and then left alone.
+     *
+     * Idempotent for the same reason Order::ensureDeliveryCode() is: re-minting
+     * would invalidate a code the customer has already been emailed and is
+     * holding at their door.
+     */
+    public function ensureDeliveryCode(): string
+    {
+        if ($this->delivery_code) {
+            return $this->delivery_code;
+        }
+
+        do {
+            $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        } while (self::where('delivery_code', $code)->where('status', '!=', 'delivered')->exists());
+
+        $this->update(['delivery_code' => $code]);
+
+        return $code;
+    }
+
+    /**
+     * Whether the code a rider typed releases this parcel.
+     *
+     * Falls back to the order's code only when the shipment has none of its
+     * own — an order placed before parcels carried their own codes. Once a
+     * shipment has a code, the order's no longer opens it, which is the whole
+     * point: on a split order the other pharmacy's rider must not be able to
+     * close this delivery.
+     */
+    public function verifyDeliveryCode(?string $supplied): bool
+    {
+        $expected = $this->delivery_code ?: $this->order?->delivery_code;
+
+        if (! $expected) {
+            // Nothing to check against. Historically this meant the code was
+            // never minted, and refusing here would strand the parcel.
+            return true;
+        }
+
+        return is_string($supplied) && hash_equals($expected, trim($supplied));
     }
 
     public static function generateTrackingNumber()

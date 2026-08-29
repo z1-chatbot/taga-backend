@@ -46,7 +46,9 @@ class ConsultationController extends Controller
         $user = $request->user();
 
         $validated = $request->validate([
-            'practitioner_type' => ['required', 'string', Rule::in(array_keys(ConsultationRequest::PRACTITIONER_TYPES))],
+            // Against the live list, so a type an administrator has just
+            // withdrawn stops being requestable immediately.
+            'practitioner_type' => ['required', 'string', Rule::in(ConsultationRequest::selectablePractitionerTypes())],
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255',
             'phone' => 'nullable|string|max:40',
@@ -106,6 +108,7 @@ class ConsultationController extends Controller
         ]);
 
         $this->sendAcknowledgement($consultation);
+        $this->alertPractitioners($consultation);
 
         // And tell somebody who can actually answer it. The customer got a
         // receipt; the practitioners got nothing, so a question about
@@ -220,11 +223,95 @@ class ConsultationController extends Controller
     // ---------------------------------------------------------------- admin
 
     /**
+     * Narrow a query to what the caller may see.
+     *
+     * A platform administrator, a manager and support see the whole queue. A
+     * practitioner sees the specialties they answer for, plus anything assigned
+     * to them by name — an administrator who hands a ticket to a specific
+     * person has overridden the specialty, and the ticket must not then vanish
+     * from the very inbox it was pushed into.
+     *
+     * A practitioner with no specialty set sees nothing rather than everything.
+     */
+    private function scopeToCaller($query, ?User $user)
+    {
+        $slugs = $user?->consultationScope();
+
+        if ($slugs === null) {
+            return $query;
+        }
+
+        return $query->where(function ($q) use ($slugs, $user) {
+            $q->whereIn('practitioner_type', $slugs)
+                ->orWhere('assigned_to', $user->id);
+        });
+    }
+
+    /**
+     * Whether somebody else is already handling this.
+     *
+     * A request for a nurse reaches every nurse — it is a pool, not a named
+     * assignment — so two of them opening the same ticket is normal and two of
+     * them answering it is not. The first to reply owns it; the rest can read
+     * it and see who has it.
+     *
+     * Only practitioners are held to this. An administrator steps in over the
+     * top at any point, which is the whole reason the queue is visible to them.
+     */
+    private function denyIfClaimedByAnother(ConsultationRequest $consultation, ?User $user): ?JsonResponse
+    {
+        // A caller who can manage the whole queue is not competing for tickets.
+        if (! $user || $user->consultationScope() === null) {
+            return null;
+        }
+
+        if (! $consultation->assigned_to || $consultation->assigned_to === $user->id) {
+            return null;
+        }
+
+        $holder = $consultation->assignee?->name ?? 'another practitioner';
+
+        return response()->json([
+            'success' => false,
+            'message' => "{$holder} is already handling this request.",
+            'code' => 'claimed_by_another',
+        ], 409);
+    }
+
+    /**
+     * Whether the caller may act on this one ticket.
+     *
+     * Returned as a refusal rather than a boolean so every caller answers the
+     * same way, and 404 rather than 403: a practitioner has no business
+     * learning that a ticket they cannot open exists.
+     */
+    private function denyOutOfScope(ConsultationRequest $consultation, ?User $user): ?JsonResponse
+    {
+        $slugs = $user?->consultationScope();
+
+        if ($slugs === null) {
+            return null;
+        }
+
+        if (in_array($consultation->practitioner_type, $slugs, true) || $consultation->assigned_to === $user->id) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Consultation request not found',
+        ], 404);
+    }
+
+    /**
      * Admin: the queue.
      */
     public function adminIndex(Request $request): JsonResponse
     {
-        $query = ConsultationRequest::query()->with(['assignee:id,name', 'user:id,name,email']);
+        $query = $this->scopeToCaller(
+            ConsultationRequest::query()->with(['assignee:id,name', 'user:id,name,email']),
+            $request->user()
+        );
 
         $status = $request->input('status');
 
@@ -276,7 +363,13 @@ class ConsultationController extends Controller
      */
     public function adminStats(): JsonResponse
     {
-        $counts = ConsultationRequest::query()
+        // Every count on this page is the caller's own queue. A practitioner
+        // reading "14 waiting" and finding two in the list would be worse than
+        // no badge at all.
+        $user = request()->user();
+        $mine = fn () => $this->scopeToCaller(ConsultationRequest::query(), $user);
+
+        $counts = $mine()
             ->selectRaw('status, count(*) as total')
             ->groupBy('status')
             ->pluck('total', 'status');
@@ -290,11 +383,11 @@ class ConsultationController extends Controller
                 'by_status' => $byStatus,
                 'active' => $byStatus['open'] + $byStatus['in_progress'] + $byStatus['scheduled'],
                 // What the badge counts: nobody has answered these yet.
-                'awaiting_reply' => ConsultationRequest::query()
+                'awaiting_reply' => $mine()
                     ->openTickets()
                     ->where('last_reply_by', ConsultationMessage::AUTHOR_CUSTOMER)
                     ->count(),
-                'by_practitioner' => ConsultationRequest::query()
+                'by_practitioner' => $mine()
                     ->openTickets()
                     ->selectRaw('practitioner_type, count(*) as total')
                     ->groupBy('practitioner_type')
@@ -318,6 +411,10 @@ class ConsultationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyOutOfScope($consultation, request()->user())) {
+            return $denied;
+        }
+
         return response()->json([
             'success' => true,
             'data' => $this->present($consultation, true),
@@ -338,6 +435,17 @@ class ConsultationController extends Controller
             ], 404);
         }
 
+        if ($denied = $this->denyOutOfScope($consultation, $request->user())) {
+            return $denied;
+        }
+
+        // Also covers reassignment: without it a practitioner could take a
+        // ticket off the colleague already working on it by writing their own
+        // id into `assigned_to`.
+        if ($denied = $this->denyIfClaimedByAnother($consultation, $request->user())) {
+            return $denied;
+        }
+
         $validated = $request->validate([
             'status' => ['nullable', Rule::in(ConsultationRequest::STATUSES)],
             'priority' => ['nullable', Rule::in(ConsultationRequest::PRIORITIES)],
@@ -355,6 +463,38 @@ class ConsultationController extends Controller
             }
         }
 
+        /*
+         * A practitioner claims a ticket for themselves and nobody else.
+         *
+         * Handing work to a named colleague is a supervisor's job, and the
+         * check above only stops them touching a ticket somebody *already*
+         * holds — without this, an unclaimed one could be pushed onto another
+         * nurse who never agreed to it.
+         */
+        $caller = $request->user();
+
+        /*
+         * Clearing it is a release — handing the request back to the pool for a
+         * colleague to pick up. Allowed, and reached here only when the caller
+         * already holds it, because the claim guard above turned away anyone
+         * touching somebody else's.
+         *
+         * Without it a practitioner who took something on and got stuck had no
+         * way out but to ask an administrator.
+         */
+        if (
+            array_key_exists('assigned_to', $updates)
+            && $caller?->consultationScope() !== null
+            && $updates['assigned_to'] !== null
+            && $updates['assigned_to'] !== $caller->id
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can take a request on yourself, but not hand it to someone else.',
+                'code' => 'cannot_assign_to_others',
+            ], 403);
+        }
+
         // A scheduled ticket with no time on it tells nobody anything, and the
         // customer's screen would show the status against a blank slot.
         $becomingScheduled = ($updates['status'] ?? $consultation->status) === ConsultationRequest::STATUS_SCHEDULED;
@@ -366,6 +506,20 @@ class ConsultationController extends Controller
                 'message' => 'Set the appointment time before marking this scheduled.',
                 'errors' => ['scheduled_at' => ['An appointment time is required to mark a request scheduled.']],
             ], 422);
+        }
+
+        /*
+         * A released request goes back to looking new.
+         *
+         * Left "in progress" with nobody on it, it reads as covered when it is
+         * not — which is exactly the state the pool exists to avoid.
+         */
+        $releasing = array_key_exists('assigned_to', $updates)
+            && $updates['assigned_to'] === null
+            && $consultation->assigned_to !== null;
+
+        if ($releasing && ($updates['status'] ?? $consultation->status) === ConsultationRequest::STATUS_IN_PROGRESS) {
+            $updates['status'] = ConsultationRequest::STATUS_OPEN;
         }
 
         if (array_key_exists('status', $updates)) {
@@ -409,6 +563,14 @@ class ConsultationController extends Controller
                 'success' => false,
                 'message' => 'Consultation request not found',
             ], 404);
+        }
+
+        if ($denied = $this->denyOutOfScope($consultation, $request->user())) {
+            return $denied;
+        }
+
+        if ($denied = $this->denyIfClaimedByAnother($consultation, $request->user())) {
+            return $denied;
         }
 
         $validated = $request->validate([
@@ -586,6 +748,48 @@ class ConsultationController extends Controller
         } catch (\Throwable $e) {
             Log::error('Failed to send consultation acknowledgement: '.$e->getMessage(), [
                 'consultation_id' => $consultation->id,
+            ]);
+        }
+    }
+
+    /**
+     * Tell the practitioners who cover this specialty that someone is waiting.
+     *
+     * A request reaches a pool rather than a named person, which is the right
+     * way round for cover — but it means nobody is personally on the hook, so
+     * without this a request sits unread until somebody happens to open the
+     * queue. Sending to all of them and letting the first reply claim it is the
+     * trade: a little duplicated attention, no single point of failure.
+     *
+     * Silent when nobody covers the specialty. That is an administrator's
+     * problem to fix, not a reason to fail the request the shopper just made.
+     */
+    private function alertPractitioners(ConsultationRequest $consultation): void
+    {
+        try {
+            $practitioners = User::query()
+                ->where('is_active', true)
+                ->whereHas(
+                    'practitionerTypes',
+                    fn ($query) => $query->where('slug', $consultation->practitioner_type)
+                )
+                ->get(['id', 'name', 'email']);
+
+            foreach ($practitioners as $practitioner) {
+                if (! $practitioner->email) {
+                    continue;
+                }
+
+                Mail::to($practitioner->email)->send(
+                    new \App\Mail\ConsultationAwaitingEmail($consultation, $practitioner->name)
+                );
+            }
+        } catch (\Throwable $e) {
+            // The ticket is already in the queue either way. A mail failure
+            // must not undo the request the shopper just made.
+            Log::error('Failed to alert practitioners of a consultation: '.$e->getMessage(), [
+                'consultation_id' => $consultation->id,
+                'practitioner_type' => $consultation->practitioner_type,
             ]);
         }
     }

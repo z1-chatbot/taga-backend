@@ -110,6 +110,40 @@ class User extends Authenticatable
     /**
      * Get the role for the user.
      */
+    /**
+     * The specialties this member of staff answers consultations for.
+     *
+     * Empty for everyone who is not a practitioner, which is almost everyone.
+     */
+    public function practitionerTypes()
+    {
+        return $this->belongsToMany(PractitionerType::class, 'practitioner_type_user')
+            ->withTimestamps();
+    }
+
+    /** True when this account exists to answer the consultation queue. */
+    public function isPractitioner(): bool
+    {
+        return $this->role === Role::PRACTITIONER
+            || ($this->roleRelation && $this->roleRelation->name === Role::PRACTITIONER);
+    }
+
+    /**
+     * The slugs this account may act on, or null when it may act on everything.
+     *
+     * Null rather than "all the slugs": a practitioner with no specialty set
+     * yet must see nothing, and an empty list has to stay distinguishable from
+     * no restriction at all.
+     */
+    public function consultationScope(): ?array
+    {
+        if ($this->isPlatformAdmin() || $this->hasPermission('consultations.manage')) {
+            return null;
+        }
+
+        return $this->practitionerTypes()->pluck('slug')->all();
+    }
+
     public function roleRelation()
     {
         return $this->belongsTo(Role::class, 'role_id');

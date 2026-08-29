@@ -224,19 +224,39 @@ class OrderNotificationService
     /**
      * Send email to store owner(s)
      */
+    /**
+     * One message per pharmacy on the order, each about its own lines.
+     *
+     * An order can span several pharmacies — the basket is one checkout, but
+     * the fulfilment is not, and OrderShipmentService already splits it into a
+     * shipment per store with its own tracking number and delivery estimate.
+     * The notification has to be split the same way.
+     *
+     * It was not. Every pharmacy received the same message carrying the whole
+     * order's subtotal and total, so a shop supplying ₦3,000 of a ₦12,000
+     * basket was told it had a ₦12,000 order, and learnt in passing what the
+     * others were selling into it. Each store now gets its own figures.
+     */
     private function sendToStoreOwners(Order $order, string $template, array $data = [])
     {
-        $stores = collect();
-        
-        foreach ($order->items as $item) {
-            if ($item->product && $item->product->store) {
-                $stores->push($item->product->store);
-            }
-        }
-        
-        $stores = $stores->unique('id');
-        
-        foreach ($stores as $store) {
+        $itemsByStore = $order->items
+            ->filter(fn ($item) => $item->product && $item->product->store)
+            ->groupBy(fn ($item) => $item->product->store_id);
+
+        $orderItemCount = $order->items->count();
+
+        foreach ($itemsByStore as $items) {
+            $store = $items->first()->product->store;
+
+            // What this pharmacy is actually being asked to supply. A fresh
+            // array per store rather than merging into $data, so one
+            // iteration cannot leak its figures into the next.
+            $storeData = array_merge($data, [
+                'store_subtotal' => $items->sum(fn ($item) => (float) $item->total),
+                'store_item_count' => $items->count(),
+                'order_item_count' => $orderItemCount,
+            ]);
+
             if ($store->owner && $store->owner->email) {
                 try {
                     $emailLog = EmailLog::logEmail(
@@ -248,7 +268,7 @@ class OrderNotificationService
                     );
                     
                     Mail::to($store->owner->email)->send(
-                        new OrderNotificationEmail($order, $template, $store->owner->name, $data)
+                        new OrderNotificationEmail($order, $template, $store->owner->name, $storeData)
                     );
                     
                     $emailLog->markAsSent();

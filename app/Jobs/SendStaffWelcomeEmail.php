@@ -56,7 +56,10 @@ class SendStaffWelcomeEmail
             // roleRelation is named in the template. Loading it here rather
             // than relying on the caller means the row reads "Staff" rather
             // than falling back to the raw role string.
-            $this->user->loadMissing('roleRelation');
+            // practitionerTypes as well: the template lists the specialties a
+            // practitioner answers for, and a queued job deserialises the user
+            // without its relations.
+            $this->user->loadMissing('roleRelation', 'practitionerTypes');
 
             Mail::to($this->user->email, $this->user->name)
                 ->send(new StaffWelcomeEmail($this->user, $this->plainPassword));

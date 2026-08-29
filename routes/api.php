@@ -108,6 +108,9 @@ Route::prefix('v1')->group(function () {
     
     // Public banners (no authentication required)
     Route::get('/banners/active', [App\Http\Controllers\Admin\BannerController::class, 'getActive']);
+
+    // The partner-pharmacy logo wall on the homepage.
+    Route::get('/partner-pharmacies', [App\Http\Controllers\Admin\PartnerPharmacyController::class, 'active']);
     
     /*
      * Cart routes, for guests and signed-in shoppers alike.
@@ -459,6 +462,23 @@ Route::prefix('v1/admin')->middleware(['auth.token'])->group(function () {
 });
 
 // Admin-only routes (Admin role required - not permission-based)
+/*
+ * Consultation requests raised from the storefront widget.
+ *
+ * These used to sit behind the blanket `admin` gate below, which meant the only
+ * accounts that could answer a shopper's health question were the same ones
+ * that could refund an order and delete a pharmacy. A practitioner now signs in
+ * as themselves; the controller narrows the queue to the specialties they
+ * actually answer for.
+ */
+Route::prefix('v1/admin')->middleware(['auth.token'])->group(function () {
+    Route::get('/consultations', [ConsultationController::class, 'adminIndex'])->middleware('permission:consultations.view');
+    Route::get('/consultations/stats', [ConsultationController::class, 'adminStats'])->middleware('permission:consultations.view');
+    Route::get('/consultations/{id}', [ConsultationController::class, 'adminShow'])->where('id', '[0-9]+')->middleware('permission:consultations.view');
+    Route::put('/consultations/{id}', [ConsultationController::class, 'adminUpdate'])->where('id', '[0-9]+')->middleware('permission:consultations.reply');
+    Route::post('/consultations/{id}/reply', [ConsultationController::class, 'adminReply'])->where('id', '[0-9]+')->middleware('permission:consultations.reply');
+});
+
 Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function () {
     
     // Pharmacy business policy (safety invariants are not settings — see PharmacyPolicy)
@@ -472,13 +492,6 @@ Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function (
 
     // Platform-level prescription oversight
     Route::get('/prescriptions', [PrescriptionController::class, 'adminQueue']);
-
-    // Consultation requests raised from the storefront widget
-    Route::get('/consultations', [ConsultationController::class, 'adminIndex']);
-    Route::get('/consultations/stats', [ConsultationController::class, 'adminStats']);
-    Route::get('/consultations/{id}', [ConsultationController::class, 'adminShow'])->where('id', '[0-9]+');
-    Route::put('/consultations/{id}', [ConsultationController::class, 'adminUpdate'])->where('id', '[0-9]+');
-    Route::post('/consultations/{id}/reply', [ConsultationController::class, 'adminReply'])->where('id', '[0-9]+');
 
     // Store Management
     Route::prefix('stores')->group(function () {
@@ -579,6 +592,29 @@ Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function (
     Route::post('/email-automation/test', [EmailAutomationController::class, 'testEmail']);
 
     // Banner Management
+    /*
+     * Partner pharmacies — the logo wall.
+     *
+     * Platform admin only, and in this group rather than the permission-gated
+     * one deliberately: this is the platform speaking about who it works with,
+     * not a shop managing its own listing.
+     */
+    Route::get('/partner-pharmacies', [App\Http\Controllers\Admin\PartnerPharmacyController::class, 'index']);
+    Route::post('/partner-pharmacies', [App\Http\Controllers\Admin\PartnerPharmacyController::class, 'store']);
+    // POST rather than PUT for the update: multipart bodies do not survive PUT
+    // in PHP, and this carries a file. Banners do the same.
+    Route::post('/partner-pharmacies/{id}', [App\Http\Controllers\Admin\PartnerPharmacyController::class, 'update']);
+    Route::put('/partner-pharmacies/{id}/toggle', [App\Http\Controllers\Admin\PartnerPharmacyController::class, 'toggleStatus']);
+    Route::delete('/partner-pharmacies/{id}', [App\Http\Controllers\Admin\PartnerPharmacyController::class, 'destroy']);
+
+    // The practitioner specialties a shopper can ask to speak to. The
+    // storefront reads the active ones from /consultations/practitioner-types.
+    Route::get('/practitioner-types', [App\Http\Controllers\Admin\PractitionerTypeController::class, 'index']);
+    Route::post('/practitioner-types', [App\Http\Controllers\Admin\PractitionerTypeController::class, 'store']);
+    Route::put('/practitioner-types/{id}', [App\Http\Controllers\Admin\PractitionerTypeController::class, 'update']);
+    Route::put('/practitioner-types/{id}/toggle', [App\Http\Controllers\Admin\PractitionerTypeController::class, 'toggleStatus']);
+    Route::delete('/practitioner-types/{id}', [App\Http\Controllers\Admin\PractitionerTypeController::class, 'destroy']);
+
     Route::get('/banners', [App\Http\Controllers\Admin\BannerController::class, 'index']);
     // Must stay above `/banners/{id}`, which would otherwise swallow "themes".
     Route::get('/banners/themes', [App\Http\Controllers\Admin\BannerController::class, 'themes']);

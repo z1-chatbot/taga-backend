@@ -62,6 +62,13 @@ class RolesAndPermissionsSeeder extends Seeder
             ['name' => 'settings.edit', 'display_name' => 'Edit Settings', 'group' => 'settings', 'description' => 'Modify system settings'],
             
             // Reports
+            // Consultations. These are new: the queue used to sit behind the
+            // blanket `admin` gate, so answering a shopper's question about a
+            // toothache required an account that could also refund an order.
+            ['name' => 'consultations.view', 'display_name' => 'View Consultations', 'group' => 'consultations', 'description' => 'See consultation requests'],
+            ['name' => 'consultations.reply', 'display_name' => 'Reply to Consultations', 'group' => 'consultations', 'description' => 'Answer a shopper and move the ticket on'],
+            ['name' => 'consultations.manage', 'display_name' => 'Manage All Consultations', 'group' => 'consultations', 'description' => 'See and assign every consultation, not only your own specialties'],
+
             ['name' => 'reports.view', 'display_name' => 'View Reports', 'group' => 'reports', 'description' => 'Access reports and analytics'],
             ['name' => 'reports.export', 'display_name' => 'Export Data', 'group' => 'reports', 'description' => 'Export data to CSV/JSON'],
             
@@ -177,6 +184,28 @@ class RolesAndPermissionsSeeder extends Seeder
             ]
         );
 
+        /*
+         * A practitioner is a member of staff, not a customer with a badge:
+         * they sign into the admin portal and answer the consultation queue.
+         * The role carries nothing else — no orders, no products, no users —
+         * because a counsellor answering a question has no business in the
+         * refunds screen.
+         *
+         * Which specialties each one answers for is per-person rather than
+         * per-role, and lives in `practitioner_type_user`. Roles would have
+         * meant a role per specialty and a new one every time an administrator
+         * added a dentist.
+         */
+        $practitionerRole = Role::updateOrCreate(
+            ['name' => Role::PRACTITIONER],
+            [
+                'display_name' => 'Practitioner',
+                'description' => 'Answers consultation requests in their own specialties',
+                'is_active' => true,
+                'sort_order' => 9
+            ]
+        );
+
         $deliveryAgentRole = Role::updateOrCreate(
             ['name' => 'delivery_agent'],
             [
@@ -219,6 +248,9 @@ class RolesAndPermissionsSeeder extends Seeder
             'sales.edit',
             'reports.view',
             'reports.export',
+            'consultations.view',
+            'consultations.reply',
+            'consultations.manage',
             // Marketplace permissions
             'stores.view',
             'stores.create',
@@ -251,9 +283,25 @@ class RolesAndPermissionsSeeder extends Seeder
             'reports.view',
         ]);
 
+        /*
+         * Practitioner permissions.
+         *
+         * Deliberately no 'dashboard.view'. It grants nothing they can use —
+         * the dashboard is platform-wide trade figures — and holding it only
+         * gets them to a page that refuses them. The consultation queue is the
+         * whole of their portal.
+         */
+        $practitionerRole->syncPermissions([
+            'consultations.view',
+            'consultations.reply',
+        ]);
+
         // Customer Support permissions
         $supportRole->syncPermissions([
             'dashboard.view',
+            'consultations.view',
+            'consultations.reply',
+            'consultations.manage',
             'products.view',
             'orders.view',
             'orders.view_details',

@@ -482,7 +482,7 @@ class CartController extends Controller
     private function buildCartResponse($userId = null, $guestId = null)
     {
         // Get cart items
-        $cartItems = Cart::with(['product', 'variation'])
+        $cartItems = Cart::with(['product', 'product.store:id,name,state,city', 'variation'])
                         ->when($userId, function ($query) use ($userId) {
                             return $query->where('user_id', $userId);
                         }, function ($query) use ($guestId) {
@@ -664,6 +664,9 @@ class CartController extends Controller
             // sending an order it knows will be refused.
             'requires_prescription' => $transformedItems->contains('requires_prescription', true),
             'prescriptions_outstanding' => $rxLinesNeedingUpload,
+            // So the basket and checkout can say, before anyone pays, that an
+            // order drawn from several pharmacies arrives as several deliveries.
+            'pharmacies' => $this->pharmaciesInCart($cartItems),
         ];
 
         // Include coupon data if applied
@@ -695,6 +698,35 @@ class CartController extends Controller
         }
 
         return $response;
+    }
+
+    /**
+     * The pharmacies this basket draws on.
+     *
+     * A basket is one payment, but fulfilment follows the shops: each pharmacy
+     * packs and dispatches its own parcel, and they arrive separately, on
+     * different days, each with its own code. That is a surprise worth having
+     * before you pay rather than after, and nothing anywhere said it.
+     *
+     * Returned for every basket, single-pharmacy included — the count is what
+     * decides whether there is anything to say, and that belongs to whoever is
+     * displaying it.
+     *
+     * @return array{count: int, names: array<int, string>}
+     */
+    private function pharmaciesInCart($cartItems): array
+    {
+        $names = $cartItems
+            ->map(fn ($item) => $item->product?->store)
+            ->filter()
+            ->unique('id')
+            ->pluck('name')
+            ->values();
+
+        return [
+            'count' => $names->count(),
+            'names' => $names->all(),
+        ];
     }
 
     /**

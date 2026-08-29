@@ -311,6 +311,31 @@ class Order extends Model
      */
     public function syncShipmentsToStatus(): void
     {
+        /*
+         * An order that is over calls off every parcel still in play.
+         *
+         * Cancelling used to set the order's own status and stop there, leaving
+         * the parcels wherever they were — usually 'pending'. The rider's
+         * portal reads the shipment, so a cancelled order stayed on somebody's
+         * job list, stayed in the console as awaiting dispatch, and could still
+         * have a courier assigned to it.
+         *
+         * A parcel already delivered is left alone: cancelling an order after
+         * the fact is a refund, and it does not un-drive the journey or undo
+         * the courier's earning.
+         */
+        if (in_array($this->status, [self::STATUS_CANCELLED, self::STATUS_REFUNDED], true)) {
+            $this->shipments()
+                ->whereNotIn('status', array_merge(['delivered'], OrderShipment::SETTLED_STATUSES))
+                ->get()
+                ->each(fn (OrderShipment $shipment) => $shipment->updateStatus('cancelled', [
+                    'updated_by' => 'order_sync',
+                    'order_status' => $this->status,
+                ], recordEvent: false));
+
+            return;
+        }
+
         $target = self::SHIPMENT_STATUS_FOR_ORDER[$this->status] ?? null;
 
         if (! $target) {
@@ -568,11 +593,78 @@ class Order extends Model
      */
     public function ensureDeliveryCode(): string
     {
-        if ($this->delivery_code) {
-            return $this->delivery_code;
+        $code = $this->delivery_code ?: $this->generateDeliveryCode();
+
+        $this->ensureShipmentDeliveryCodes();
+
+        return $code;
+    }
+
+    /**
+     * Give every parcel on this order a confirmation code.
+     *
+     * One parcel keeps the order's code, so a single-pharmacy order — which is
+     * most of them — behaves exactly as it always has: one code in one email,
+     * read to one rider.
+     *
+     * Several parcels each get their own. They arrive separately, carried by
+     * different riders, and a shared code lets either one close out a delivery
+     * that was not theirs.
+     */
+    public function ensureShipmentDeliveryCodes(): void
+    {
+        $shipments = $this->shipments()->get();
+
+        if ($shipments->isEmpty()) {
+            return;
         }
 
-        return $this->generateDeliveryCode();
+        if ($shipments->count() === 1) {
+            $only = $shipments->first();
+
+            if (! $only->delivery_code) {
+                $only->update(['delivery_code' => $this->delivery_code]);
+            }
+
+            return;
+        }
+
+        foreach ($shipments as $shipment) {
+            // Not ensureDeliveryCode() blindly: a parcel that inherited the
+            // order's code before the order was split would keep a code its
+            // sibling also holds.
+            if (! $shipment->delivery_code || $shipment->delivery_code === $this->delivery_code) {
+                $shipment->update(['delivery_code' => null]);
+                $shipment->ensureDeliveryCode();
+            }
+        }
+    }
+
+    /**
+     * Whether every parcel on this order has reached this stage of fulfilment.
+     *
+     * The order is only as far along as its slowest parcel. A rider confirming
+     * their own delivery used to mark the whole order delivered, credit the
+     * courier and settle a cash-on-delivery payment — while a second pharmacy's
+     * parcel had not left the shop.
+     *
+     * True for an order with no shipments, and for the single-shipment orders
+     * that are most of them, so the common path is unchanged.
+     */
+    public function allShipmentsReached(string $shipmentStatus): bool
+    {
+        $required = OrderShipment::STATUS_RANK[$shipmentStatus] ?? null;
+
+        if ($required === null) {
+            return true;
+        }
+
+        return ! $this->shipments()
+            // A parcel that failed or was returned is finished with, not
+            // pending. Waiting on it would hold the order open for ever.
+            ->whereNotIn('status', OrderShipment::SETTLED_STATUSES)
+            ->get()
+            ->contains(fn (OrderShipment $shipment) => $shipment->rank() < $required);
     }
 
     /**

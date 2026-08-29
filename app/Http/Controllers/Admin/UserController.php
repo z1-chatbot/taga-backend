@@ -189,6 +189,8 @@ class UserController extends Controller
              */
             'role' => ['sometimes', Rule::in(self::assignableRoleNames())],
             'role_id' => 'sometimes|nullable|exists:roles,id',
+            'practitioner_type_ids' => 'sometimes|array',
+            'practitioner_type_ids.*' => 'integer|exists:practitioner_types,id',
             'is_active' => 'sometimes|boolean',
             'password' => 'sometimes|string|min:8|confirmed',
         ]);
@@ -227,6 +229,12 @@ class UserController extends Controller
         }
 
         $data = $request->only(['name', 'email', 'phone', 'role', 'role_id', 'is_active']);
+
+        // Only when the caller said something about them: a partial update that
+        // never mentions specialties must not strip the ones already set.
+        if ($request->has('practitioner_type_ids')) {
+            $user->practitionerTypes()->sync($request->input('practitioner_type_ids', []));
+        }
 
         if ($request->filled('password')) {
             $data['password'] = Hash::make($request->password);
@@ -271,6 +279,10 @@ class UserController extends Controller
             // at all, so even a correct store filter had nothing to filter by
             // and they fell through to seeing the whole platform.
             'store_id' => 'nullable|exists:stores,id',
+            // Which specialties a practitioner answers for. Ignored for every
+            // other role — a stock manager has no specialty.
+            'practitioner_type_ids' => 'sometimes|array',
+            'practitioner_type_ids.*' => 'integer|exists:practitioner_types,id',
             'password' => 'required|string|min:8|confirmed',
             'is_active' => 'boolean',
         ]);
@@ -322,6 +334,20 @@ class UserController extends Controller
             ], 422);
         }
 
+        // A practitioner with no specialty sees an empty queue and can answer
+        // nobody, which looks like a broken account rather than an incomplete
+        // one. Refuse it at the point where it is still easy to fix.
+        $isPractitioner = $role->name === Role::PRACTITIONER;
+
+        if ($isPractitioner && ! $request->filled('practitioner_type_ids')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Choose at least one specialty this practitioner answers for.',
+                'code' => 'specialty_required_for_practitioner',
+                'errors' => ['practitioner_type_ids' => ['At least one specialty is required.']],
+            ], 422);
+        }
+
         // Store plain password before hashing to send in email
         $plainPassword = $request->password;
 
@@ -349,7 +375,11 @@ class UserController extends Controller
             throw $e;
         }
 
-        $user->load('roleRelation');
+        if ($isPractitioner) {
+            $user->practitionerTypes()->sync($request->input('practitioner_type_ids', []));
+        }
+
+        $user->load('roleRelation', 'practitionerTypes:id,slug,label');
 
         // Send welcome email with credentials
         \App\Jobs\SendStaffWelcomeEmail::dispatch($user, $plainPassword);
