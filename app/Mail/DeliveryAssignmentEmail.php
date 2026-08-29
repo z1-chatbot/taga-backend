@@ -36,6 +36,18 @@ class DeliveryAssignmentEmail extends Mailable
     /**
      * Create a new message instance.
      */
+    /**
+     * Every parcel on this courier's round, this one included.
+     *
+     * Two pharmacies in the same city are assigned together as one pickup run,
+     * so the manifest has to cover all of them. Scoped to the one parcel that
+     * happened to be clicked, this email sent a rider to one shop and never
+     * mentioned the second — which they had already been paid to collect.
+     *
+     * @var \Illuminate\Support\Collection
+     */
+    public $runShipments;
+
     public function __construct(
         Order $order,
         string $recipientType,
@@ -48,6 +60,18 @@ class DeliveryAssignmentEmail extends Mailable
         $this->recipientName = $recipientName;
         $this->trackingNumber = $trackingNumber;
         $this->shipment = $shipment;
+
+        /*
+         * The whole round, not the one parcel that was clicked.
+         *
+         * Pharmacies in the same city are assigned together and paid as one
+         * journey, so the manifest has to name all of them. Without this the
+         * email sent a rider to one shop and never mentioned the second, which
+         * they had already been paid to collect.
+         */
+        $this->runShipments = $shipment
+            ? $shipment->run()->with('store')->orderBy('id')->get()
+            : $order->shipments()->with('store')->orderBy('id')->get();
 
         /*
          * The figure quoted here is produced by the same service that credits

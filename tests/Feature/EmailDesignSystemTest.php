@@ -91,11 +91,21 @@ class EmailDesignSystemTest extends TestCase
     {
         $offenders = [];
 
-        // Matches a monospace face being *used* — a named mono family, or the
-        // generic keyword sitting in a font stack. Not the word in prose: the
-        // first version of this test failed on EmailStyle's own comment saying
-        // there is deliberately no monospace here.
-        $used = '~(ui-monospace|SFMono|Consolas|Menlo|Courier|Liberation Mono)|font-family\s*:[^;\'"]*monospace~i';
+        /*
+         * Matches a monospace face being *used*, which means inside a font
+         * declaration and nowhere else.
+         *
+         * Two earlier versions matched the family names anywhere in the file
+         * and failed on prose: first on EmailStyle's own comment saying there
+         * is deliberately no monospace here, then on the delivery templates,
+         * which say "courier" constantly because that is what the recipient
+         * is — and Courier is also a font.
+         *
+         * Stripping comments fixed the first and not the second: that word is
+         * in the visible copy, where it belongs. So anchor on the declaration
+         * instead. A face can only be set by `font-family:` or `font:`.
+         */
+        $used = '~font(-family)?\s*:[^;\'"]*(ui-monospace|SFMono|Consolas|Menlo|Courier|Liberation Mono|monospace)~i';
 
         foreach (array_merge($this->convertedTemplates(), [app_path('Support/EmailStyle.php')]) as $file) {
             // Comments stripped first, for the same reason the prose exception

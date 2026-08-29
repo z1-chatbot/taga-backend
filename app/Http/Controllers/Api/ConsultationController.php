@@ -536,6 +536,16 @@ class ConsultationController extends Controller
 
         $consultation->update($updates);
 
+        /*
+         * Handing a request back puts it in front of the specialty again, so
+         * they have to be told again. Without this a released request is
+         * invisible until somebody reopens the queue — the same silence the
+         * pool alert exists to prevent, arriving by a different route.
+         */
+        if ($releasing) {
+            $this->alertPractitioners($consultation->fresh());
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Request updated.',

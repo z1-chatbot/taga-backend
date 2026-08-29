@@ -6,20 +6,27 @@
     $where = array_filter([$a['address'] ?? null, $a['city'] ?? null, $a['state'] ?? null]);
 
     /*
-     * Only what this courier is actually carrying.
+     * Only what this courier is actually carrying — but all of it.
      *
-     * An order filled from two pharmacies is two parcels on two journeys, and
-     * this listed the whole basket to whoever was assigned either one — so a
-     * rider collecting from one shop was given a manifest including another
-     * shop's stock, with no way to tell which boxes were theirs.
+     * An order filled from two pharmacies is two parcels, and this listed the
+     * whole basket to whoever was assigned either one, so a rider was given a
+     * manifest including another courier's stock with no way to tell which
+     * boxes were theirs.
+     *
+     * Scoped to the *round* rather than the single parcel: shops in the same
+     * city are assigned together and paid as one journey, so a rider collecting
+     * from two of them needs both on the list.
      */
     $parcel = $shipment ?? null;
+    $run = collect($runShipments ?? []);
+
+    $storeIds = $run->pluck('store_id')->filter()->map(fn ($id) => (int) $id)->all();
 
     $items = collect($order->items);
 
-    if ($parcel && $parcel->store_id) {
+    if ($storeIds) {
         $items = $items->filter(
-            fn ($item) => $item->product && (int) $item->product->store_id === (int) $parcel->store_id
+            fn ($item) => $item->product && in_array((int) $item->product->store_id, $storeIds, true)
         );
     }
 
@@ -32,12 +39,26 @@
     // Where to collect it. The email named the delivery address and never the
     // pickup one, so the single fact a courier needs first was the one thing
     // missing — and on a split order "the pharmacy" is ambiguous besides.
-    $pharmacy = $parcel?->store;
-    $collectFrom = $pharmacy
-        ? array_filter([$pharmacy->name, $pharmacy->city, $pharmacy->state])
-        : [];
+    // Every shop on this round. On a single-pharmacy order that is one line,
+    // exactly as before.
+    $pickups = $run
+        ->map(fn ($s) => $s->store)
+        ->filter()
+        ->unique('id')
+        ->map(fn ($store) => implode(', ', array_filter([$store->name, $store->city, $store->state])))
+        ->values();
 
+    if ($pickups->isEmpty() && $parcel?->store) {
+        $store = $parcel->store;
+        $pickups = collect([implode(', ', array_filter([$store->name, $store->city, $store->state]))]);
+    }
+
+    // How many parcels on this order somebody *else* is carrying. The warning
+    // below is about stock that is not theirs, so a round of two counts as one
+    // journey, not two.
     $parcelCount = $order->shipments->count();
+    $mine = max(1, $run->count());
+    $othersCarry = max(0, $parcelCount - $mine);
 @endphp
 
 @extends('emails.layout')
@@ -54,10 +75,17 @@
         {{ $recipientType === 'company' ? 'company' : 'account' }}.
     </p>
 
-    @if ($parcelCount > 1)
+    @if ($othersCarry > 0)
         <p style="{!! S::BODY !!}">
-            This order ships from {{ $parcelCount }} pharmacies. You are carrying one parcel of it
-            &mdash; the items and the fee below are yours alone.
+            This order ships from {{ $parcelCount }} pharmacies and another courier is carrying
+            the rest of it. The items and the fee below are yours alone.
+        </p>
+    @endif
+
+    @if ($pickups->count() > 1)
+        <p style="{!! S::BODY !!}">
+            There are {{ $pickups->count() }} pharmacies to collect from on this run, listed below.
+            Both are on your way to the same address, and the fee covers the whole round.
         </p>
     @endif
 
@@ -65,7 +93,9 @@
         'rows' => array_filter([
             'Order' => e($order->order_number),
             'Tracking number' => $trackingNumber ? e($trackingNumber) : null,
-            'Collect from' => $collectFrom ? e(implode(', ', $collectFrom)) : null,
+            'Collect from' => $pickups->isNotEmpty()
+                ? $pickups->map(fn ($p) => e($p))->implode('<br>')
+                : null,
             'Customer' => e($customer),
             'Phone' => e($a['phone'] ?? 'Not given'),
             'Deliver to' => $where ? e(implode(', ', $where)) : 'Not given',

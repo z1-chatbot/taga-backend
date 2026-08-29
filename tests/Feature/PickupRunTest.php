@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\Role;
 use App\Models\ShippingRate;
 use App\Models\Store;
+use App\Mail\DeliveryAssignmentEmail;
 use App\Services\DeliveryEarningsService;
 use Tests\TestCase;
 
@@ -402,6 +403,83 @@ class PickupRunTest extends TestCase
             $company->id,
             collect($options)->where('type', 'company')->pluck('id')->all()
         );
+    }
+
+    public function test_the_assignment_email_lists_every_pharmacy_on_the_run(): void
+    {
+        $order = $this->order();
+
+        $first = $this->parcel($order, 'Lagos', 'Ikeja', 750);
+        $second = $this->parcel($order, 'Lagos', 'Ikeja', 750);
+
+        $rider = $this->rider('Lagos', 'Ikeja');
+
+        $first->update(['delivery_agent_id' => $rider->id]);
+        $second->update(['delivery_agent_id' => $rider->id]);
+
+        $rendered = (new DeliveryAssignmentEmail(
+            $order->fresh(),
+            'agent',
+            $rider->name,
+            $first->tracking_number,
+            $first->fresh()
+        ))->render();
+
+        /*
+         * Both shops, or the rider collects from one and never learns about the
+         * other — which they have already been paid to collect, because the
+         * round is charged and settled as one journey.
+         */
+        $this->assertStringContainsString($first->store->name, $rendered);
+        $this->assertStringContainsString($second->store->name, $rendered);
+    }
+
+    public function test_the_assignment_email_still_hides_another_couriers_parcel(): void
+    {
+        $order = $this->order(3000);
+
+        $mine = $this->parcel($order, 'Lagos', 'Ikeja', 1500);
+        $theirs = $this->parcel($order, 'Lagos', 'Epe', 1500);
+
+        $rider = $this->rider('Lagos', 'Ikeja');
+        $mine->update(['delivery_agent_id' => $rider->id]);
+
+        $rendered = (new DeliveryAssignmentEmail(
+            $order->fresh(),
+            'agent',
+            $rider->name,
+            $mine->tracking_number,
+            $mine->fresh()
+        ))->render();
+
+        // A different round is a different courier's stock. Widening the
+        // manifest to the run must not widen it to the whole order.
+        $this->assertStringContainsString($mine->store->name, $rendered);
+        $this->assertStringNotContainsString($theirs->store->name, $rendered);
+    }
+
+    public function test_a_single_pharmacy_assignment_email_is_unchanged(): void
+    {
+        $order = $this->order();
+        $only = $this->parcel($order, 'Lagos', 'Ikeja', 1500);
+
+        $rider = $this->rider('Lagos', 'Ikeja');
+        $only->update(['delivery_agent_id' => $rider->id]);
+
+        $rendered = (new DeliveryAssignmentEmail(
+            $order->fresh(),
+            'agent',
+            $rider->name,
+            $only->tracking_number,
+            $only->fresh()
+        ))->render();
+
+        $this->assertStringContainsString($only->store->name, $rendered);
+
+        // No "another courier is carrying the rest" on an order nobody else is
+        // touching, and no multi-pickup preamble for one shop.
+        $this->assertStringNotContainsString('another courier', $rendered);
+        $this->assertStringNotContainsString('pharmacies to collect from', $rendered);
     }
 
     public function test_two_runs_still_have_to_be_named(): void

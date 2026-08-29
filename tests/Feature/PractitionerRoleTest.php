@@ -394,6 +394,29 @@ class PractitionerRoleTest extends TestCase
         $this->assertSame($colleague->id, $request->fresh()->assigned_to);
     }
 
+    public function test_handing_back_tells_the_specialty_it_is_free_again(): void
+    {
+        $nurse = $this->practitioner(['nurse']);
+        $colleague = $this->practitioner(['nurse']);
+
+        $request = $this->consultation('nurse', ['assigned_to' => $nurse->id]);
+
+        Mail::fake();
+
+        $this->putJson(
+            "/api/v1/admin/consultations/{$request->id}",
+            ['assigned_to' => null],
+            $this->tokenFor($nurse)
+        )->assertOk();
+
+        // Otherwise a released request is invisible until somebody happens to
+        // reopen the queue — the same silence the pool alert exists to prevent.
+        Mail::assertSent(
+            \App\Mail\ConsultationAwaitingEmail::class,
+            fn ($mail) => $mail->hasTo($colleague->email)
+        );
+    }
+
     public function test_the_thread_survives_a_hand_back(): void
     {
         $nurse = $this->practitioner(['nurse']);
