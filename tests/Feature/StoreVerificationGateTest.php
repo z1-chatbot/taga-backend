@@ -161,11 +161,24 @@ class StoreVerificationGateTest extends TestCase
 
     // ---- and the pharmacy is told ------------------------------------------
 
-    public function test_approval_emails_the_pharmacy(): void
+    /**
+     * Addressed to the person who registered, not to the premises.
+     *
+     * The application captures two addresses on two separate steps — `email` is
+     * the pharmacy's public contact, `owner_email` is whoever signed up — and
+     * this used to prefer the first. Wherever a shop published a general address
+     * (info@, a branch inbox nobody opens) the decision went there and the
+     * person waiting on it never saw it. Approval is what promotes their
+     * account and opens the dashboard, so it belongs to the human.
+     */
+    public function test_approval_emails_the_person_who_registered_not_the_premises(): void
     {
         Mail::fake();
 
         $store = $this->storeWith(Store::VERIFICATION_PENDING, ['email' => 'shop@pharmacy.test']);
+        $ownerEmail = $store->owner->email;
+
+        $this->assertNotSame('shop@pharmacy.test', $ownerEmail, 'the fixture must use two different addresses');
 
         $this->postJson("/api/v1/admin/stores/{$store->id}/verification/review", [
             'action' => 'approve',
@@ -174,9 +187,51 @@ class StoreVerificationGateTest extends TestCase
             'pharmacy_license_expiry' => now()->addYear()->toDateString(),
         ], $this->tokenFor($this->makeUser(['role' => 'admin'])))->assertOk();
 
-        Mail::assertSent(StoreVerificationDecisionEmail::class, function ($mail) {
-            return $mail->approved === true && $mail->hasTo('shop@pharmacy.test');
+        Mail::assertSent(StoreVerificationDecisionEmail::class, function ($mail) use ($ownerEmail) {
+            return $mail->approved === true
+                && $mail->hasTo($ownerEmail)
+                && ! $mail->hasTo('shop@pharmacy.test');
         });
+    }
+
+    /**
+     * The premises address is the fallback, not the default. A store whose owner
+     * record carries no usable address must still be reachable rather than
+     * silently unsendable.
+     *
+     * Blanked rather than nulled: both `users.email` and `stores.owner_id` are
+     * NOT NULL, so an empty address is the only shape this can actually take in
+     * this schema — and it is the one `?:` has to survive.
+     */
+    public function test_the_pharmacy_address_is_used_when_the_owner_has_none(): void
+    {
+        Mail::fake();
+
+        $store = $this->storeWith(Store::VERIFICATION_PENDING, ['email' => 'shop@pharmacy.test']);
+        $store->owner->forceFill(['email' => ''])->save();
+
+        $this->postJson("/api/v1/admin/stores/{$store->id}/verification/review", [
+            'action' => 'approve',
+            'can_sell_prescription' => true,
+            'pharmacy_license_number' => 'PCN-12345',
+            'pharmacy_license_expiry' => now()->addYear()->toDateString(),
+        ], $this->tokenFor($this->makeUser(['role' => 'admin'])))->assertOk();
+
+        Mail::assertSent(StoreVerificationDecisionEmail::class, fn ($mail) => $mail->hasTo('shop@pharmacy.test'));
+    }
+
+    /**
+     * The mailbox decides the SMTP credentials, not just the From line, so it
+     * decides whether the message is delivered at all. This one goes out with
+     * the other account messages; config/mail.php already points the Reply-To
+     * of `noreply` at support, so a pharmacy that replies still reaches a person.
+     */
+    public function test_the_decision_goes_out_through_the_noreply_mailbox(): void
+    {
+        $mailbox = (new \ReflectionClass(StoreVerificationDecisionEmail::class))
+            ->getDefaultProperties()['mailbox'] ?? null;
+
+        $this->assertSame('noreply', $mailbox);
     }
 
     public function test_rejection_emails_the_pharmacy_with_the_reason(): void

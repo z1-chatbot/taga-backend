@@ -25,12 +25,24 @@ class StoreVerificationDecisionEmail extends Mailable
     use Queueable, SerializesModels, SendsFromMailbox;
 
     /**
-     * Sent from the support mailbox - a person is expected to reply to this.
+     * Sent from the noreply mailbox, with the rest of the account messages.
      *
-     * Each mailbox is its own SMTP account and may only send as its own
-     * address, so this picks the credentials as well as the From line.
+     * This was on `support` because a pharmacy might reply to it. That reasoning
+     * does not require the support mailbox: config/mail.php points the Reply-To
+     * of `noreply` at the support address, so a pharmacy hitting reply reaches a
+     * person either way.
+     *
+     * What it is, is an account message. Approval promotes the owner's account
+     * and opens the dashboard; rejection is what keeps it shut. That is the same
+     * family as sign-up, verification and password reset — the mailbox
+     * config/mail.php describes as "identity".
+     *
+     * Each mailbox is its own SMTP account and may only send as its own address,
+     * so this picks the credentials as well as the From line — which is why the
+     * choice decides whether the message is delivered at all, not just how it
+     * looks.
      */
-    protected string $mailbox = 'support';
+    protected string $mailbox = 'noreply';
 
     public Store $store;
 

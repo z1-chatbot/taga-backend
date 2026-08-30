@@ -323,7 +323,23 @@ class StoreVerificationController extends Controller
      */
     private function notifyDecision(Store $store, bool $approved, ?string $reason, ?bool $isApplicant = null): array
     {
-        $recipient = $store->email ?: $store->owner?->email;
+        /*
+         * The person, not the premises.
+         *
+         * This read `$store->email` first and only fell back to the owner. The
+         * two are separate fields captured on separate steps of the application
+         * — `email` is the pharmacy's public contact address, `owner_email` is
+         * whoever registered it — so wherever a shop published a general
+         * address (info@, a landline-era address, a branch inbox nobody opens)
+         * the decision went there and the person waiting for it never saw it.
+         *
+         * Approval is addressed to a human: it is what promotes their account
+         * and lets them into the dashboard. That is the registrant. The
+         * pharmacy address stays only as a fallback, so a store whose owner
+         * record has no address is still reachable rather than silently
+         * unsendable.
+         */
+        $recipient = $store->owner?->email ?: $store->email;
 
         if (! $recipient) {
             \Log::warning('Store verification decided but there is no address to tell them', [
@@ -348,6 +364,29 @@ class StoreVerificationController extends Controller
                 'approved' => $approved,
                 'recipient' => $recipient,
             ]);
+
+            /*
+             * Logged like the applicant's verification email is. A log file on
+             * shared hosting is not somewhere anyone can check whether a given
+             * pharmacy was told; this row is.
+             *
+             * Caught separately on purpose. The message has already gone by
+             * this point, so a failure to write the record must not fall into
+             * the catch below and report a delivered email as a failed one.
+             */
+            try {
+                \App\Models\EmailLog::logEmail(
+                    $recipient,
+                    'store_verification_decision',
+                    $approved ? 'Pharmacy licence approved' : 'Pharmacy licence not approved',
+                    null,
+                    $store->owner_id
+                )->markAsSent();
+            } catch (\Throwable $e) {
+                \Log::warning('Could not record the store verification email: '.$e->getMessage(), [
+                    'store_id' => $store->id,
+                ]);
+            }
 
             return ['sent' => true, 'recipient' => $recipient, 'error' => null];
         } catch (\Throwable $e) {
