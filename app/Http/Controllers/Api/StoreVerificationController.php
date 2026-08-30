@@ -263,13 +263,9 @@ class StoreVerificationController extends Controller
                 'verified_by' => $request->user()?->id,
             ]);
 
-            $this->notifyDecision($store->fresh(), false, $validated['notes'] ?? null, $wasApplicant);
+            $notice = $this->notifyDecision($store->fresh(), false, $validated['notes'] ?? null, $wasApplicant);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Store verification rejected.',
-                'data' => $this->present($store->fresh()),
-            ]);
+            return $this->decisionResponse($store, $notice, 'Store verification rejected.');
         }
 
         $canSellControlled = $request->boolean('can_sell_controlled');
@@ -303,23 +299,29 @@ class StoreVerificationController extends Controller
         // waiting outside for exactly this.
         StoreApplicationController::grantDashboardAccess($store->fresh());
 
-        $this->notifyDecision($store->fresh(), true, null, $wasApplicant);
+        $notice = $this->notifyDecision($store->fresh(), true, null, $wasApplicant);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Store verified successfully.',
-            'data' => $this->present($store->fresh()),
-        ]);
+        return $this->decisionResponse($store, $notice, 'Store verified successfully.');
     }
 
     /**
-     * Tell the pharmacy what was decided.
+     * Tell the pharmacy what was decided, and say whether we managed to.
      *
      * Approval is what puts their listings on sale and rejection is what keeps
      * them off it, so staying silent left a shop with no idea why it had no
-     * orders. A mail failure must not undo the decision itself, hence the catch.
+     * orders. A mail failure must not undo the decision itself — the licence
+     * really has been approved — hence the catch.
+     *
+     * What the catch must NOT do is swallow the outcome. Both failures here
+     * used to end in a log line while the reviewer was told "Store verified
+     * successfully", so an approval that emailed nobody was indistinguishable
+     * from one that worked. The only place the difference showed was a server
+     * log nobody reads, and the pharmacy waited for a message that was never
+     * coming. This returns what happened so the reviewer can be told.
+     *
+     * @return array{sent: bool, recipient: ?string, error: ?string}
      */
-    private function notifyDecision(Store $store, bool $approved, ?string $reason, ?bool $isApplicant = null): void
+    private function notifyDecision(Store $store, bool $approved, ?string $reason, ?bool $isApplicant = null): array
     {
         $recipient = $store->email ?: $store->owner?->email;
 
@@ -329,18 +331,53 @@ class StoreVerificationController extends Controller
                 'approved' => $approved,
             ]);
 
-            return;
+            return [
+                'sent' => false,
+                'recipient' => null,
+                'error' => 'This pharmacy has no email address on file, and neither does its owner.',
+            ];
         }
 
         try {
             \Illuminate\Support\Facades\Mail::to($recipient)->send(
                 new \App\Mail\StoreVerificationDecisionEmail($store, $approved, $reason, $isApplicant)
             );
+
+            \Log::info('Store verification decision email sent', [
+                'store_id' => $store->id,
+                'approved' => $approved,
+                'recipient' => $recipient,
+            ]);
+
+            return ['sent' => true, 'recipient' => $recipient, 'error' => null];
         } catch (\Throwable $e) {
             \Log::error('Failed to send store verification decision email: '.$e->getMessage(), [
                 'store_id' => $store->id,
+                'recipient' => $recipient,
+                'exception' => $e::class,
             ]);
+
+            return ['sent' => false, 'recipient' => $recipient, 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * The decision stands either way; the message about it might not have.
+     *
+     * Reported next to the success rather than instead of it, because the two
+     * are genuinely separate outcomes and the reviewer needs to act on the
+     * second one — by telling the pharmacy another way.
+     */
+    private function decisionResponse(Store $store, array $notice, string $success): \Illuminate\Http\JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'message' => $notice['sent']
+                ? $success
+                : $success.' The pharmacy could NOT be emailed, so tell them another way.',
+            'notification' => $notice,
+            'data' => $this->present($store->fresh()),
+        ]);
     }
 
     private function resolveStore(Request $request): ?Store
