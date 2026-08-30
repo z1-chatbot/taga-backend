@@ -505,6 +505,9 @@ Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function (
         Route::get('/{id}', [StoreManagementController::class, 'show']);
         Route::post('/{id}/suspend', [StoreManagementController::class, 'suspend']);
         Route::post('/{id}/activate', [StoreManagementController::class, 'activate']);
+        // Archive, not erase: orders and payouts point at these rows.
+        Route::delete('/{id}', [StoreManagementController::class, 'destroy']);
+        Route::post('/{id}/restore', [StoreManagementController::class, 'restore']);
         Route::put('/{id}/commission', [StoreManagementController::class, 'updateCommission']);
         Route::get('/{id}/payouts', [StoreManagementController::class, 'payouts']);
         Route::post('/{id}/payouts', [StoreManagementController::class, 'createPayout']);
