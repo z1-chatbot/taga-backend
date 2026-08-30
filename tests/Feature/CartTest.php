@@ -116,70 +116,46 @@ class CartTest extends TestCase
         $this->assertCount(0, $response->json('data.items') ?? []);
     }
 
-    // ---- the cash-on-delivery switch ----------------------------------------
+    // ---- how an order can be paid for --------------------------------------
 
     /**
-     * The basket has to agree with checkout about cash on delivery.
+     * There is one way to pay, and the basket says so.
      *
-     * enable_cod gates order creation, but the basket used to advertise cash on
-     * delivery regardless — so a shopper picked it, submitted, and only then
-     * was refused. These cover the two sides of that.
+     * Three tests here used to cover a cash-on-delivery switch: that the basket
+     * offered it while it was on, withdrew it when it went off, and left a
+     * cash-only basket unpayable rather than advertising something checkout
+     * would refuse. The switch, the per-product override and the whole payment
+     * branch are gone — Taga takes online payment before dispatch and has no
+     * code path that accepts anything else — so what is worth pinning now is
+     * that nothing reintroduces a second option.
      */
-    private function setCod(bool $enabled): void
+    public function test_the_basket_offers_online_payment_and_nothing_else(): void
     {
-        \App\Models\SystemSetting::updateOrCreate(
-            ['category' => \App\Models\SystemSetting::CATEGORY_GENERAL, 'key' => 'enable_cod'],
-            [
-                'value' => $enabled,
-                'type' => \App\Models\SystemSetting::TYPE_BOOLEAN,
-                'label' => 'Enable COD',
-                'is_active' => true,
-            ]
-        );
-    }
-
-    public function test_the_basket_offers_cash_on_delivery_while_it_is_switched_on(): void
-    {
-        $this->setCod(true);
         $product = Product::factory()->create(['price' => 800]);
 
         $this->postJson('/api/v1/cart', ['product_id' => $product->id, 'quantity' => 1], $this->guestHeaders(self::GUEST));
 
         $response = $this->getJson('/api/v1/cart', $this->guestHeaders(self::GUEST))->assertOk();
 
-        $this->assertContains('cash_on_delivery', $response->json('data.allowed_payment_methods'));
-        $this->assertContains('paystack', $response->json('data.allowed_payment_methods'));
+        $this->assertSame(['paystack'], $response->json('data.allowed_payment_methods'));
+        $this->assertNull($response->json('data.payment_restriction_message'));
     }
 
-    public function test_switching_cash_on_delivery_off_withdraws_it_from_the_basket(): void
+    /**
+     * A pharmacy cannot mark stock cash-only, so a basket can never be left
+     * with nothing it can pay with. The option is gone from the product form
+     * and refused by the API; this pins the API half.
+     */
+    public function test_a_product_cannot_be_marked_cash_on_delivery_only(): void
     {
-        $this->setCod(false);
-        $product = Product::factory()->create(['price' => 800]);
+        $admin = $this->makeUser(['role' => 'admin']);
 
-        $this->postJson('/api/v1/cart', ['product_id' => $product->id, 'quantity' => 1], $this->guestHeaders(self::GUEST));
-
-        $response = $this->getJson('/api/v1/cart', $this->guestHeaders(self::GUEST))->assertOk();
-
-        $this->assertNotContains('cash_on_delivery', $response->json('data.allowed_payment_methods'));
-        $this->assertContains('paystack', $response->json('data.allowed_payment_methods'));
-        $this->assertNotNull($response->json('data.payment_restriction_message'));
-    }
-
-    public function test_a_cash_only_basket_is_left_unpayable_rather_than_misleading(): void
-    {
-        // Checkout would refuse this order, so the basket must not pretend
-        // otherwise. Nothing payable is the honest answer.
-        $this->setCod(false);
-        $product = Product::factory()->create([
+        $this->postJson('/api/v1/admin/products', [
+            'name' => 'Paracetamol 500mg',
             'price' => 800,
             'payment_method_restriction' => 'cash_on_delivery',
-        ]);
-
-        $this->postJson('/api/v1/cart', ['product_id' => $product->id, 'quantity' => 1], $this->guestHeaders(self::GUEST));
-
-        $response = $this->getJson('/api/v1/cart', $this->guestHeaders(self::GUEST))->assertOk();
-
-        $this->assertSame([], $response->json('data.allowed_payment_methods'));
-        $this->assertStringContainsString('switched off', $response->json('data.payment_restriction_message'));
+        ], $this->tokenFor($admin))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('payment_method_restriction');
     }
 }

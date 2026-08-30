@@ -266,40 +266,10 @@ class SystemSettingsSeeder extends Seeder
         );
 
         // Delivery settings
-        // Cash on delivery is not offered: the storefront sends every order as an
-        // online payment. Offering an operator a switch for a payment method no
-        // customer can choose is a promise the platform does not keep, so the row
-        // is gone and SystemSetting::codEnabled() now defaults to FALSE — the API
-        // refuses COD rather than merely not advertising it.
-        //
-        // To bring COD back: restore this block with a value of true, AND add the
-        // option to the storefront checkout, which currently hardcodes
-        // is_pay_on_delivery to false.
-        //
-        // SystemSetting::setValue(
-        //     SystemSetting::CATEGORY_GENERAL,
-        //     'enable_cod',
-        //     true,
-        //     'Enable Cash on Delivery',
-        //     'Allow customers to pay on delivery',
-        //     SystemSetting::TYPE_BOOLEAN
-        // );
-
-        // Cash on delivery is not offered — the storefront sends every order as
-        // an online payment and enable_cod gates the API — so a COD fee cannot
-        // be charged by any route. Both checkout paths also hardcode
-        // `'cod_fee' => 0`. Commented out rather than deleted: if COD is ever
-        // switched on, restore this AND wire the fee into OrderController,
-        // because uncommenting alone would still charge nothing.
-        //
-        // SystemSetting::setValue(
-        //     SystemSetting::CATEGORY_GENERAL,
-        //     'cod_fee_percentage',
-        //     2,
-        //     'COD Fee Percentage (%)',
-        //     'Additional fee for cash on delivery orders',
-        //     SystemSetting::TYPE_NUMBER
-        // );
+        // Cash on delivery is not offered and there is no switch for it. The
+        // storefront sends every order as an online payment, checkout has no
+        // path that accepts anything else, and the columns and fee settings
+        // that once described one have all been removed.
 
         // Store pickup is supported all the way through fulfilment — the admin and
         // agent portals both handle it — but the storefront hardcodes

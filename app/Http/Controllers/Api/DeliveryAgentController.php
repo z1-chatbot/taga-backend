@@ -234,13 +234,6 @@ class DeliveryAgentController extends Controller
                             'delivered_at' => now(),
                             'delivery_notes' => $request->notes,
                         ]);
-
-                        // Cash on delivery settles when the last parcel lands —
-                        // the customer has not paid for the order until they
-                        // have received all of it.
-                        if ($order->is_pay_on_delivery) {
-                            $order->update(['payment_status' => 'paid']);
-                        }
                     }
 
                     // Mark agent as available if no other active shipments

@@ -299,7 +299,7 @@ class SplitOrderDispatchTest extends TestCase
         Mail::fake();
 
         [$order, $alpha, $beta] = $this->splitOrder();
-        $order->update(['is_pay_on_delivery' => true, 'payment_status' => Order::PAYMENT_PENDING]);
+        $order->update(['payment_status' => Order::PAYMENT_PENDING]);
         $order->ensureDeliveryCode();
 
         $musa = $this->rider('Musa');
@@ -313,9 +313,8 @@ class SplitOrderDispatchTest extends TestCase
         $order->refresh();
 
         // The customer has one of two parcels. Marking the order delivered told
-        // them it had all arrived, closed the window to report a problem with
-        // the parcel still in transit, and — on cash on delivery — recorded
-        // them as having paid for goods they had not received.
+        // them it had all arrived and closed the window to report a problem
+        // with the parcel still in transit.
         $this->assertNotSame('delivered', $order->status);
         $this->assertSame(Order::PAYMENT_PENDING, $order->payment_status);
         $this->assertSame('delivered', $alpha->fresh()->status);
@@ -326,7 +325,7 @@ class SplitOrderDispatchTest extends TestCase
         Mail::fake();
 
         [$order, $alpha, $beta] = $this->splitOrder();
-        $order->update(['is_pay_on_delivery' => true, 'payment_status' => Order::PAYMENT_PENDING]);
+        $order->update(['payment_status' => Order::PAYMENT_PENDING]);
         $order->ensureDeliveryCode();
 
         foreach ([[$alpha, 'Musa'], [$beta, 'Bola']] as [$parcel, $name]) {
@@ -342,7 +341,11 @@ class SplitOrderDispatchTest extends TestCase
         $order->refresh();
 
         $this->assertSame('delivered', $order->status);
-        $this->assertSame('paid', $order->payment_status);
+
+        // Delivering a parcel does not settle an order. It used to, on the
+        // cash-on-delivery path: the last rider to arrive marked the whole
+        // order paid. Payment now moves only when the gateway says so.
+        $this->assertSame(Order::PAYMENT_PENDING, $order->payment_status);
     }
 
     // --- Earnings ---------------------------------------------------------

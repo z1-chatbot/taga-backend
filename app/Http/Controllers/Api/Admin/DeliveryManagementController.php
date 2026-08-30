@@ -69,7 +69,6 @@ class DeliveryManagementController extends Controller
             'from_state' => 'required|string',
             'to_state' => 'required|string',
             'base_rate' => 'required|numeric|min:0',
-            'per_kg_rate' => 'nullable|numeric|min:0',
             'estimated_days_min' => 'nullable|integer|min:0',
             'estimated_days_max' => 'nullable|integer|min:0',
             'logistics_company_id' => 'nullable|integer|exists:logistics_companies,id|prohibits:delivery_agent_id',

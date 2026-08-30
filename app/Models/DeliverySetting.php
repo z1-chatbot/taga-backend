@@ -138,7 +138,6 @@ class DeliverySetting extends Model
     const MINIMUM_PAYOUT_AMOUNT = 'minimum_payout_amount';
     const EARNINGS_HOLD_PERIOD_HOURS = 'earnings_hold_period_hours';
     const FREE_SHIPPING_THRESHOLD = 'free_shipping_threshold';
-    const COD_FEE_PERCENTAGE = 'cod_fee_percentage';
     const SMS_NOTIFICATIONS_ENABLED = 'sms_notifications_enabled';
     const EMAIL_NOTIFICATIONS_ENABLED = 'email_notifications_enabled';
 }

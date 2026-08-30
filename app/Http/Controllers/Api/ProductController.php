@@ -1235,7 +1235,7 @@ class ProductController extends Controller
             'free_shipping' => 'nullable|boolean',
             'is_featured' => 'nullable|boolean',
             'is_active' => 'nullable|boolean',
-            'payment_method_restriction' => 'nullable|in:any,payment_before_delivery,cash_on_delivery',
+            'payment_method_restriction' => 'nullable|in:any,payment_before_delivery',
             'images' => 'nullable|array',
             'images.*' => 'nullable|string',
             'meta_title' => 'nullable|string|max:255',

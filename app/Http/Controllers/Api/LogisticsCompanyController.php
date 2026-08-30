@@ -451,7 +451,6 @@ class LogisticsCompanyController extends Controller
                 'agent_id' => $shipment->delivery_agent_id,
                 'shipping_fee' => $shipment->shipping_fee,
                 'items' => $shipment->items,
-                'is_cod' => $shipment->order->is_pay_on_delivery ?? false,
                 'order_total' => $shipment->order->total_amount ?? 0,
                 'assigned_at' => $shipment->assigned_at?->format('Y-m-d H:i'),
                 'picked_up_at' => $shipment->picked_up_at?->format('Y-m-d H:i'),
@@ -492,7 +491,6 @@ class LogisticsCompanyController extends Controller
                 'status' => $shipment->status,
                 'shipping_fee' => $shipment->shipping_fee,
                 'items' => $shipment->items,
-                'is_cod' => $shipment->order->is_pay_on_delivery ?? false,
                 'order_total' => $shipment->order->total_amount ?? 0,
                 'payment_status' => $shipment->order->payment_status ?? 'N/A',
                 'customer' => [
@@ -675,13 +673,6 @@ class LogisticsCompanyController extends Controller
                             'delivered_at' => now(),
                             'delivery_notes' => $request->notes,
                         ]);
-
-                        // Cash on delivery settles when the last parcel lands —
-                        // the customer has not paid for the order until they
-                        // have received all of it.
-                        if ($order->is_pay_on_delivery) {
-                            $order->update(['payment_status' => 'paid']);
-                        }
                     }
                     break;
             }
@@ -1067,7 +1058,6 @@ class LogisticsCompanyController extends Controller
             'from_state' => $r->from_state,
             'to_state' => $r->to_state,
             'base_rate' => (float) $r->base_rate,
-            'per_kg_rate' => (float) $r->per_kg_rate,
             'estimated_days_min' => $r->estimated_days_min,
             'estimated_days_max' => $r->estimated_days_max,
             'is_interstate' => $r->is_interstate,
@@ -1077,7 +1067,6 @@ class LogisticsCompanyController extends Controller
             'from_state' => $r->from_state,
             'to_state' => $r->to_state,
             'base_rate' => (float) $r->base_rate,
-            'per_kg_rate' => (float) $r->per_kg_rate,
             'estimated_days_min' => $r->estimated_days_min,
             'estimated_days_max' => $r->estimated_days_max,
             'is_interstate' => $r->is_interstate,

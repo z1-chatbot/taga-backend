@@ -414,7 +414,6 @@ class ShippingZoneController extends Controller
                 'company_id' => $rate->logistics_company_id,
                 'company_name' => $rate->logisticsCompany->name ?? 'Global',
                 'base_rate' => (float) $rate->base_rate,
-                'per_kg_rate' => (float) $rate->per_kg_rate,
                 'estimated_days' => $rate->getEstimatedDeliveryRange(),
             ];
         });

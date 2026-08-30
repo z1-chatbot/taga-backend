@@ -391,7 +391,6 @@ class SystemSettingsController extends Controller
         $settings = [
             'currency_symbol' => SystemSetting::getCurrencySymbol(),
             'free_shipping_threshold' => (float) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'free_shipping_threshold', 50000),
-            'cod_fee_percentage' => (float) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'cod_fee_percentage', 2),
             'default_tax_rate' => (float) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'default_tax_rate', 7.5),
             'low_stock_threshold' => (int) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'low_stock_threshold', 10),
             'max_products_per_store' => (int) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'max_products_per_store', 1000),

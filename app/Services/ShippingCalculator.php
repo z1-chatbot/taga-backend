@@ -7,7 +7,7 @@ use App\Models\DeliverySetting;
 
 class ShippingCalculator
 {
-    public function calculateFee($fromState, $toState, $weight = 0, $subtotal = 0)
+    public function calculateFee($fromState, $toState, $subtotal = 0)
     {
         // Check free shipping threshold
         $freeShippingThreshold = DeliverySetting::getValue('free_shipping_threshold', 0);
@@ -16,26 +16,9 @@ class ShippingCalculator
         }
 
         // Get shipping rate
-        $fee = ShippingRate::getShippingFee($fromState, $toState, $weight);
+        $fee = ShippingRate::getShippingFee($fromState, $toState);
         
         return $fee;
-    }
-
-    public function calculateCODFee($orderTotal)
-    {
-        $codEnabled = DeliverySetting::getValue('enable_cod_fee', false);
-        if (!$codEnabled) {
-            return 0;
-        }
-
-        $feeType = DeliverySetting::getValue('cod_fee_type', 'percentage');
-        
-        if ($feeType === 'flat') {
-            return DeliverySetting::getValue('cod_flat_fee', 100);
-        }
-        
-        $percentage = DeliverySetting::getValue('cod_fee_percentage', 2);
-        return ($orderTotal * $percentage) / 100;
     }
 
     public function getEstimatedDays($fromState, $toState)

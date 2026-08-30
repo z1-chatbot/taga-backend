@@ -15,8 +15,6 @@ class ShippingRate extends Model
         'from_state',
         'to_state',
         'base_rate',
-        'per_kg_rate',
-        'weight_threshold',
         'estimated_days_min',
         'estimated_days_max',
         'is_interstate',
@@ -26,8 +24,6 @@ class ShippingRate extends Model
 
     protected $casts = [
         'base_rate' => 'decimal:2',
-        'per_kg_rate' => 'decimal:2',
-        'weight_threshold' => 'decimal:2',
         'estimated_days_min' => 'integer',
         'estimated_days_max' => 'integer',
         'is_interstate' => 'boolean',
@@ -88,18 +84,21 @@ class ShippingRate extends Model
                     ->where('to_state', $toState);
     }
 
-    // Methods
-    public function calculateShippingFee($weight = 0)
+    /**
+     * What this route costs.
+     *
+     * A flat figure per journey, deliberately. There was a weight band here
+     * once — base rate plus a per-kg charge above a 5kg threshold — and it was
+     * removed rather than fixed: medicine is parcel-sized, so a whole order of
+     * blister packs, an inhaler and a bottle of syrup never reached the
+     * threshold and the per-kg charge was always zero. Nothing was ever weighed
+     * either; products carry a nullable weight_kg that the vendor upload form
+     * does not ask for. What actually drives the cost here is distance and the
+     * number of stops, which is what the pickup run prices.
+     */
+    public function calculateShippingFee()
     {
-        $fee = $this->base_rate;
-
-        // Add per-kg charge if weight exceeds threshold
-        if ($weight > $this->weight_threshold) {
-            $excessWeight = $weight - $this->weight_threshold;
-            $fee += ($excessWeight * $this->per_kg_rate);
-        }
-
-        return round($fee, 2);
+        return round((float) $this->base_rate, 2);
     }
 
     public function getEstimatedDeliveryRange()
@@ -178,10 +177,10 @@ class ShippingRate extends Model
      * Get shipping fee for a route, optionally for a specific company.
      * Company-specific rates take precedence over global rates.
      */
-    public static function getShippingFee($fromState, $toState, $weight = 0, $companyId = null)
+    public static function getShippingFee($fromState, $toState, $companyId = null)
     {
         $rate = self::findRate($fromState, $toState, $companyId);
-        return $rate ? $rate->calculateShippingFee($weight) : 0;
+        return $rate ? $rate->calculateShippingFee() : 0;
     }
 
     public static function getEstimatedDays($fromState, $toState, $companyId = null)

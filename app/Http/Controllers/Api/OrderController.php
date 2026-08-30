@@ -272,7 +272,6 @@ class OrderController extends Controller
             'shipping_address.phone' => 'required|string',
             'billing_address' => 'nullable|array',
             'payment_method' => 'nullable|string',
-            'is_pay_on_delivery' => 'nullable|boolean',
             'delivery_type' => 'nullable|in:home_delivery,pickup,store_pickup',
             'notes' => 'nullable|string'
         ]);
@@ -390,17 +389,7 @@ class OrderController extends Controller
             $taxAmount = $this->calculateTax($subtotal, $request->shipping_address);
             
             // Set payment method
-            if ($request->is_pay_on_delivery && ! $this->codIsEnabled()) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Cash on delivery is not available at the moment. Please pay online to place your order.',
-                    'code' => 'cod_disabled',
-                ], 422);
-            }
-
-            $paymentMethod = $request->payment_method ?? ($request->is_pay_on_delivery ? 'cash_on_delivery' : null);
+            $paymentMethod = $request->payment_method;
 
             // Apply active sale events
             $saleDiscountResult = $this->calculateSaleDiscount($cartItems);
@@ -447,8 +436,6 @@ class OrderController extends Controller
                 'currency' => 'NGN',
                 'payment_status' => Order::PAYMENT_PENDING,
                 'payment_method' => $paymentMethod,
-                'is_pay_on_delivery' => $request->is_pay_on_delivery ?? false,
-                'cod_fee' => 0, // No COD fee
                 'delivery_type' => $deliveryType,
                 'coupon_id' => $coupon?->id,
                 'coupon_code' => $coupon?->code,
@@ -519,37 +506,6 @@ class OrderController extends Controller
                 \Log::error('OrderController@store - Failed to create shipments: ' . $e->getMessage());
             }
 
-            // COD only. Online orders get theirs the moment payment is
-            // confirmed, on every one of those paths rather than just the
-            // webhook the old comment here named.
-            if ($request->is_pay_on_delivery) {
-                $order->ensureDeliveryCode();
-
-                // Cash orders reached the pharmacy silently. The three online
-                // payment paths all call this; the COD path never did, so a
-                // store's first sight of a cash order was whenever it next
-                // opened the orders page, and no administrator heard about it
-                // at all.
-                try {
-                    (new \App\Services\OrderNotificationService())->notifyOrderPlaced($order->fresh());
-                } catch (\Throwable $e) {
-                    \Log::error('Failed to send COD order notifications: '.$e->getMessage(), [
-                        'order_id' => $order->id,
-                    ]);
-                }
-            }
-
-            // Send order confirmation email for COD orders
-            if ($request->is_pay_on_delivery && $request->shipping_address['email']) {
-                try {
-                    \Mail::to($request->shipping_address['email'])->send(
-                        new \App\Mail\OrderStatusEmail($order->fresh(), 'confirmed')
-                    );
-                    \Log::info('OrderController@store - Order confirmation email sent for COD order');
-                } catch (\Exception $e) {
-                    \Log::error('OrderController@store - Failed to send order confirmation email: ' . $e->getMessage());
-                }
-            }
 
             // NOTE: Order placed notifications are now sent AFTER payment is confirmed
             // (in PaystackService::verifyPayment, webhook handler, or admin manual confirmation)
@@ -727,11 +683,6 @@ class OrderController extends Controller
      * on delivery whatever it said. Defaults to true, so an operator who never
      * touches it keeps the behaviour they already had.
      */
-    private function codIsEnabled(): bool
-    {
-        return \App\Models\SystemSetting::codEnabled();
-    }
-
     /**
      * Calculate shipping cost with free shipping threshold and multi-store support
      */
@@ -1596,7 +1547,6 @@ class OrderController extends Controller
             'coupon_code' => 'nullable|string',
             'notes' => 'nullable|string',
             'payment_method' => 'nullable|string',
-            'is_pay_on_delivery' => 'nullable|boolean',
             'delivery_type' => 'nullable|in:home_delivery,pickup,store_pickup'
         ]);
 
@@ -1692,17 +1642,7 @@ class OrderController extends Controller
             $taxAmount = $this->calculateTax($subtotal, $request->shipping_address);
             
             // Set payment method
-            if ($request->is_pay_on_delivery && ! $this->codIsEnabled()) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Cash on delivery is not available at the moment. Please pay online to place your order.',
-                    'code' => 'cod_disabled',
-                ], 422);
-            }
-
-            $paymentMethod = $request->payment_method ?? ($request->is_pay_on_delivery ? 'cash_on_delivery' : null);
+            $paymentMethod = $request->payment_method;
 
             // Apply active sale events
             $saleDiscountResult = $this->calculateSaleDiscountForProduct($product, $request->quantity);
@@ -1759,8 +1699,6 @@ class OrderController extends Controller
                 'currency' => 'NGN',
                 'payment_status' => Order::PAYMENT_PENDING,
                 'payment_method' => $paymentMethod,
-                'is_pay_on_delivery' => $request->is_pay_on_delivery ?? false,
-                'cod_fee' => 0, // No COD fee
                 'delivery_type' => $deliveryType,
                 'coupon_id' => $coupon?->id,
                 'coupon_code' => $coupon?->code,
@@ -1815,37 +1753,6 @@ class OrderController extends Controller
                 \Log::error('OrderController@buyNow - Failed to create shipments: ' . $e->getMessage());
             }
 
-            // COD only. Online orders get theirs the moment payment is
-            // confirmed, on every one of those paths rather than just the
-            // webhook the old comment here named.
-            if ($request->is_pay_on_delivery) {
-                $order->ensureDeliveryCode();
-
-                // Cash orders reached the pharmacy silently. The three online
-                // payment paths all call this; the COD path never did, so a
-                // store's first sight of a cash order was whenever it next
-                // opened the orders page, and no administrator heard about it
-                // at all.
-                try {
-                    (new \App\Services\OrderNotificationService())->notifyOrderPlaced($order->fresh());
-                } catch (\Throwable $e) {
-                    \Log::error('Failed to send COD order notifications: '.$e->getMessage(), [
-                        'order_id' => $order->id,
-                    ]);
-                }
-            }
-
-            // Send order confirmation email for COD orders
-            if ($request->is_pay_on_delivery && $request->shipping_address['email']) {
-                try {
-                    \Mail::to($request->shipping_address['email'])->send(
-                        new \App\Mail\OrderStatusEmail($order->fresh(), 'confirmed')
-                    );
-                    \Log::info('OrderController@buyNow - Order confirmation email sent for COD order');
-                } catch (\Exception $e) {
-                    \Log::error('OrderController@buyNow - Failed to send order confirmation email: ' . $e->getMessage());
-                }
-            }
 
             \Log::info('OrderController@buyNow - Order created successfully: ' . $order->order_number);
 

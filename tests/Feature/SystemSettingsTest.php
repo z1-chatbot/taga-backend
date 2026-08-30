@@ -187,36 +187,31 @@ class SystemSettingsTest extends TestCase
     }
 
     /**
-     * The COD fee setting is paused, not retired — cash on delivery is not
-     * offered, so no fee can be charged by any route.
+     * Cash on delivery is gone, not paused.
+     *
+     * This used to check that the fee setting had no row while reminding
+     * whoever switched COD back on that both checkout paths hardcoded the fee
+     * to zero. There is nothing left to switch back on: the columns, the
+     * settings, the basket branch and the checkout parameter have all been
+     * removed, so the reminder has been replaced by a check that none of it
+     * came back.
      */
-    public function test_the_cod_fee_setting_is_gone(): void
+    public function test_cash_on_delivery_is_gone_from_settings_and_checkout(): void
     {
         $this->assertNull(
             SystemSetting::where('category', SystemSetting::CATEGORY_GENERAL)
-                ->where('key', 'cod_fee_percentage')
+                ->whereIn('key', ['cod_fee_percentage', 'enable_cod'])
                 ->first(),
-            'cash on delivery is not offered, so a COD fee cannot be charged'
+            'cash on delivery is not offered, so neither setting should have a row'
         );
-    }
 
-    /**
-     * Restoring the setting would not be enough on its own. Both checkout paths
-     * hardcode the fee to zero, so whoever switches COD back on has to wire the
-     * fee in as well — this fails the moment that stops being true, which is
-     * exactly when the reminder is needed.
-     */
-    public function test_restoring_the_cod_fee_alone_would_still_charge_nothing(): void
-    {
-        $this->setSetting(SystemSetting::CATEGORY_GENERAL, 'cod_fee_percentage', 25);
+        foreach (['OrderController', 'CartController'] as $controller) {
+            $source = file_get_contents(app_path("Http/Controllers/Api/{$controller}.php"));
 
-        $source = file_get_contents(app_path('Http/Controllers/Api/OrderController.php'));
-
-        $this->assertSame(
-            2,
-            substr_count($source, "'cod_fee' => 0"),
-            'both checkout paths still hardcode the COD fee to zero'
-        );
+            $this->assertStringNotContainsString("cash_on_delivery", $source, $controller);
+            $this->assertStringNotContainsString("is_pay_on_delivery", $source, $controller);
+            $this->assertStringNotContainsString("cod_fee", $source, $controller);
+        }
     }
 
     // ---- keys the code reads that have no row --------------------------------

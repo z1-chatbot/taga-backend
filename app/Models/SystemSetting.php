@@ -158,24 +158,6 @@ class SystemSetting extends Model
     }
 
     /**
-     * Whether cash on delivery is on offer at all.
-     *
-     * Consulted in two places that must agree: the basket, which decides what
-     * to offer, and checkout, which refuses what it will not accept.
-     *
-     * Defaults to FALSE, and there is deliberately no row to change it. Cash on
-     * delivery is not offered — the storefront sends every order as an online
-     * payment — so the honest answer when nothing says otherwise is no. Turning
-     * it back on means restoring the setting AND adding the option to checkout;
-     * flipping this default alone would only make the API accept something no
-     * customer can select.
-     */
-    public static function codEnabled(): bool
-    {
-        return self::getBool(self::CATEGORY_GENERAL, 'enable_cod', false);
-    }
-
-    /**
      * The platform's cut of a new pharmacy's sales, as a percentage.
      *
      * Direction matters and the name hides it: this is money the platform

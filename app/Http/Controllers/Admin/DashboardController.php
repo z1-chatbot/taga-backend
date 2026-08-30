@@ -70,6 +70,12 @@ class DashboardController extends Controller
         $lastMonth = Carbon::now()->subMonth()->startOfMonth();
         $thisYear = Carbon::now()->startOfYear();
 
+        // The same window the platform dashboard uses, so a shop owner can ask
+        // about a date range on their own figures too.
+        $window = $this->reportWindow();
+        $startDate = $window['start'];
+        $endDate = $window['end'];
+
         // An order belongs to a shop through the products on its lines.
         $orders = fn () => Order::whereHas(
             'items.product',
@@ -82,6 +88,18 @@ class DashboardController extends Controller
 
         $monthRevenue = $paid()->where('created_at', '>=', $thisMonth)->sum('total_amount');
         $lastMonthRevenue = $paid()->whereBetween('created_at', [$lastMonth, $thisMonth])->sum('total_amount');
+
+        // Qualified with the table name: these queries join through order_items
+        // and products, all three of which have a created_at.
+        $windowRevenue = (float) $paid()->whereBetween('orders.created_at', [$startDate, $endDate])->sum('total_amount');
+        $previousWindowRevenue = (float) $paid()
+            ->whereBetween('orders.created_at', [$window['previous_start'], $window['previous_end']])
+            ->sum('total_amount');
+
+        $windowOrders = $orders()->whereBetween('orders.created_at', [$startDate, $endDate])->count();
+        $previousWindowOrders = $orders()
+            ->whereBetween('orders.created_at', [$window['previous_start'], $window['previous_end']])
+            ->count();
 
         return response()->json([
             'success' => true,
@@ -116,9 +134,18 @@ class DashboardController extends Controller
                     'pending' => $reviews()->where('is_approved', false)->count(),
                     'average_rating' => round((float) $reviews()->where('is_approved', true)->avg('rating'), 2),
                 ],
+                'window' => [
+                    'from' => $startDate->toDateString(),
+                    'to' => $endDate->toDateString(),
+                    'days' => $window['days'],
+                    'revenue' => $windowRevenue,
+                    'revenue_growth' => $this->growth($windowRevenue, $previousWindowRevenue),
+                    'orders' => $windowOrders,
+                    'orders_growth' => $this->growth($windowOrders, $previousWindowOrders),
+                ],
                 'recent_orders' => $orders()->with('user')->latest()->limit(5)->get(),
                 'sales_chart' => $paid()
-                    ->where('created_at', '>=', Carbon::now()->subDays(30))
+                    ->whereBetween('orders.created_at', [$startDate, $endDate])
                     ->select(
                         DB::raw('DATE(orders.created_at) as date'),
                         DB::raw('SUM(orders.total_amount) as revenue'),
@@ -157,6 +184,22 @@ class DashboardController extends Controller
         $thisMonth = Carbon::now()->startOfMonth();
         $lastMonth = Carbon::now()->subMonth()->startOfMonth();
         $thisYear = Carbon::now()->startOfYear();
+
+        /*
+         * The dashboard answers two different questions and must not mix them.
+         *
+         * "How is the shop right now" is stock levels, pending orders, unapproved
+         * reviews — the state of things, which no date range applies to. Filtering
+         * "products out of stock" by last March is meaningless.
+         *
+         * "How did we trade" is revenue, orders placed, customers gained. Those
+         * are events, they happened on a date, and they are what the window
+         * below covers. The named cards (today, this month, this year) stay as
+         * they are; the window is reported alongside them.
+         */
+        $window = $this->reportWindow();
+        $startDate = $window['start'];
+        $endDate = $window['end'];
 
         // Revenue statistics
         $todayRevenue = Order::where('payment_status', Order::PAYMENT_PAID)
@@ -225,9 +268,9 @@ class DashboardController extends Controller
                              ->limit(5)
                              ->get();
 
-        // Sales chart data (last 30 days)
+        // Sales chart data, over the window rather than a fixed 30 days.
         $salesChart = Order::where('payment_status', Order::PAYMENT_PAID)
-                          ->where('created_at', '>=', Carbon::now()->subDays(30))
+                          ->whereBetween('created_at', [$startDate, $endDate])
                           ->select(
                               DB::raw('DATE(created_at) as date'),
                               DB::raw('SUM(total_amount) as revenue'),
@@ -237,13 +280,48 @@ class DashboardController extends Controller
                           ->orderBy('date')
                           ->get();
 
-        // Top selling products
-        $topProducts = Product::withCount(['orderItems as total_sold' => function($query) {
-                                $query->select(DB::raw('SUM(quantity)'));
+        /*
+         * Top sellers over the window.
+         *
+         * This counted every line ever sold, which is a different question and a
+         * misleading one to put beside a date filter: the same five products
+         * would sit there whatever range was picked, because a product that sold
+         * well two years ago outranks one selling well this week.
+         */
+        $topProducts = Product::withCount(['orderItems as total_sold' => function ($query) use ($startDate, $endDate) {
+                                $query->select(DB::raw('SUM(quantity)'))
+                                      ->whereHas('order', fn ($order) => $order
+                                          ->whereBetween('created_at', [$startDate, $endDate]));
                             }])
+                            // Sold at least once inside the window. Without this
+                            // an empty window still returns five products, each
+                            // with a null total — a "top sellers" list of things
+                            // that sold nothing.
+                            ->whereHas('orderItems.order', fn ($order) => $order
+                                ->whereBetween('orders.created_at', [$startDate, $endDate]))
                             ->orderBy('total_sold', 'desc')
                             ->limit(5)
                             ->get();
+
+        // Trade over the window, against the window of equal length before it.
+        $windowRevenue = (float) Order::where('payment_status', Order::PAYMENT_PAID)
+                                      ->whereBetween('created_at', [$startDate, $endDate])
+                                      ->sum('total_amount');
+
+        $previousRevenue = (float) Order::where('payment_status', Order::PAYMENT_PAID)
+                                        ->whereBetween('created_at', [$window['previous_start'], $window['previous_end']])
+                                        ->sum('total_amount');
+
+        $windowOrders = Order::whereBetween('created_at', [$startDate, $endDate])->count();
+        $previousOrders = Order::whereBetween('created_at', [$window['previous_start'], $window['previous_end']])->count();
+
+        $windowCustomers = User::where('role', 'customer')
+                               ->whereBetween('created_at', [$startDate, $endDate])
+                               ->count();
+
+        $previousCustomers = User::where('role', 'customer')
+                                 ->whereBetween('created_at', [$window['previous_start'], $window['previous_end']])
+                                 ->count();
 
         return response()->json([
             'success' => true,
@@ -293,6 +371,17 @@ class DashboardController extends Controller
                 'charts' => [
                     'sales' => $salesChart,
                     'top_products' => $topProducts
+                ],
+                'window' => [
+                    'from' => $startDate->toDateString(),
+                    'to' => $endDate->toDateString(),
+                    'days' => $window['days'],
+                    'revenue' => $windowRevenue,
+                    'revenue_growth' => $this->growth($windowRevenue, $previousRevenue),
+                    'orders' => $windowOrders,
+                    'orders_growth' => $this->growth($windowOrders, $previousOrders),
+                    'new_customers' => $windowCustomers,
+                    'new_customers_growth' => $this->growth($windowCustomers, $previousCustomers),
                 ]
             ]
         ]);
@@ -320,6 +409,21 @@ class DashboardController extends Controller
     /**
      * Get sales analytics
      */
+    /**
+     * Movement between two windows of equal length, as a percentage.
+     *
+     * Nothing to compare against reads as no movement rather than as infinite
+     * growth: a first week of trade is not "+100%", it is the first week.
+     */
+    private function growth(float $current, float $previous): float
+    {
+        if ($previous <= 0) {
+            return 0.0;
+        }
+
+        return round((($current - $previous) / $previous) * 100, 1);
+    }
+
     /**
      * The window a report covers.
      *

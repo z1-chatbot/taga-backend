@@ -565,47 +565,21 @@ class CartController extends Controller
             ]);
         }
 
-        // Check for payment method restrictions in cart
-        $hasPaymentBeforeDeliveryOnly = $cartItems->contains(function ($item) {
-            return $item->product && $item->product->payment_method_restriction === 'payment_before_delivery';
-        });
-        
-        $hasCashOnDeliveryOnly = $cartItems->contains(function ($item) {
-            return $item->product && $item->product->payment_method_restriction === 'cash_on_delivery';
-        });
-        
-        // Determine allowed payment methods
-        $allowedPaymentMethods = ['paystack', 'cash_on_delivery']; // Default: both allowed
-        $paymentRestrictionMessage = null;
-        
-        if ($hasPaymentBeforeDeliveryOnly && $hasCashOnDeliveryOnly) {
-            // Conflicting restrictions - should not happen, but handle gracefully
-            $allowedPaymentMethods = ['paystack']; // Default to payment before delivery
-            $paymentRestrictionMessage = 'Your cart contains items with conflicting payment requirements. Please contact support.';
-        } elseif ($hasPaymentBeforeDeliveryOnly) {
-            $allowedPaymentMethods = ['paystack'];
-            $paymentRestrictionMessage = 'Some items in your cart require payment before delivery. Cash on delivery is not available for this order.';
-        } elseif ($hasCashOnDeliveryOnly) {
-            $allowedPaymentMethods = ['cash_on_delivery'];
-            $paymentRestrictionMessage = 'Some items in your cart are only available for cash on delivery.';
-        }
-
         /*
-         * The Settings switch overrides every per-product rule above. Without
-         * this the basket kept offering cash on delivery while the switch was
-         * off, and the shopper only found out when checkout refused the order
-         * at the last step. A cart of cash-only stock is left with nothing it
-         * can pay with, which is the honest answer — checkout would refuse it.
+         * One way to pay: online, before the parcel moves.
+         *
+         * There was a cash-on-delivery branch here — per-product overrides, a
+         * conflict case, and a Settings switch gating the lot. All of it is
+         * gone. Taga does not take cash on delivery and checkout has no path
+         * that would accept it, so the branch could only ever have advertised
+         * something the next step would refuse.
+         *
+         * The two fields stay in the response: the storefront reads them to
+         * render the payment step, and a per-product `payment_before_delivery`
+         * restriction is still a real thing a pharmacy can set.
          */
-        if (! \App\Models\SystemSetting::codEnabled()) {
-            $allowedPaymentMethods = array_values(
-                array_diff($allowedPaymentMethods, ['cash_on_delivery'])
-            );
-
-            $paymentRestrictionMessage = empty($allowedPaymentMethods)
-                ? 'Cash on delivery is switched off, and every item in your cart is cash on delivery only. Please remove them to continue.'
-                : 'Cash on delivery is not available at the moment. Please pay online to place your order.';
-        }
+        $allowedPaymentMethods = ['paystack'];
+        $paymentRestrictionMessage = null;
 
         // Transform cart items to include pricing details
         $transformedItems = $cartItems->map(function ($item) {

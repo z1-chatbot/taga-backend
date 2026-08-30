@@ -39,8 +39,6 @@ class Order extends Model
         'delivery_type',
         'pickup_location',
         // Pay on delivery
-        'is_pay_on_delivery',
-        'cod_fee',
         // Shipping zone
         'shipping_zone_id',
         'calculated_shipping_fee',
@@ -78,7 +76,6 @@ class Order extends Model
         'billing_address' => 'array',
         'pickup_location' => 'array',
         'delivery_notes' => 'array',
-        'is_pay_on_delivery' => 'boolean',
         'requires_prescription' => 'boolean',
         'subtotal' => 'decimal:2',
         'tax_amount' => 'decimal:2',
@@ -87,7 +84,6 @@ class Order extends Model
         'coupon_discount' => 'decimal:2',
         'sale_discount' => 'decimal:2',
         'total_amount' => 'decimal:2',
-        'cod_fee' => 'decimal:2',
         'calculated_shipping_fee' => 'decimal:2',
         'shipped_at' => 'datetime',
         'delivered_at' => 'datetime',
@@ -726,11 +722,6 @@ class Order extends Model
             'delivery_notes' => $deliveryNotes
         ]);
 
-        // If pay on delivery, mark payment as received
-        if ($this->is_pay_on_delivery) {
-            $this->update(['payment_status' => 'paid']);
-        }
-
         // Update delivery agent status
         if ($this->deliveryAgent) {
             $this->deliveryAgent->completeDelivery($this);
@@ -785,10 +776,7 @@ class Order extends Model
             $this->calculateShippingFee();
         }
         
-        // Add COD fee if applicable
-        $codFee = $this->is_pay_on_delivery ? $this->cod_fee : 0;
-        
-        $this->total_amount = $this->subtotal + $this->tax_amount + $this->shipping_amount + $codFee - $this->discount_amount;
+        $this->total_amount = $this->subtotal + $this->tax_amount + $this->shipping_amount - $this->discount_amount;
         
         return $this;
     }
