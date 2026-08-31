@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Mail\AdminAlertEmail;
 use App\Models\Product;
 use App\Models\Store;
 use Illuminate\Http\UploadedFile;
@@ -293,5 +294,124 @@ class StoreOwnerOnboardingTest extends TestCase
 
         $this->assertFalse($response->json('data.can_sell'));
         $this->assertNotSame('active', $response->json('data.stage'));
+    }
+
+    // ---- telling a reviewer there is something to review -------------------
+
+    /**
+     * The question this whole section answers: does anybody find out?
+     *
+     * Only /sell/register alerted an admin. Both other routes into the same
+     * queue -- an existing customer applying while signed in, and an
+     * admin-created owner setting up in the dashboard -- landed silently, so a
+     * pharmacy could sit pending indefinitely while being told by email that we
+     * would get back to them either way.
+     */
+    public function test_an_admin_is_told_when_an_owner_sets_up_from_the_dashboard(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+
+        $admin = $this->makeUser(['role' => 'admin']);
+
+        $this->createPharmacy($this->tokenFor($this->freshOwner()))->assertCreated();
+
+        Mail::assertSent(
+            AdminAlertEmail::class,
+            fn ($mail) => $mail->hasTo($admin->email)
+                && str_contains($mail->subject, 'New pharmacy application')
+                && str_contains($mail->subject, 'Melrose Pharmacy')
+        );
+    }
+
+    /** Every administrator, not just whoever happens to be first. */
+    public function test_every_administrator_is_told(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+
+        $one = $this->makeUser(['role' => 'admin']);
+        $two = $this->makeUser(['role' => 'admin']);
+
+        $this->createPharmacy($this->tokenFor($this->freshOwner()))->assertCreated();
+
+        Mail::assertSent(AdminAlertEmail::class, fn ($mail) => $mail->hasTo($one->email));
+        Mail::assertSent(AdminAlertEmail::class, fn ($mail) => $mail->hasTo($two->email));
+    }
+
+    /**
+     * A resubmission is a different message. A reviewer who has already turned
+     * this pharmacy down once needs to know that is what they are looking at,
+     * not read it as a fresh application.
+     */
+    public function test_a_resubmission_says_so(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+
+        $this->makeUser(['role' => 'admin']);
+
+        $owner = $this->freshOwner();
+        $headers = $this->tokenFor($owner);
+
+        $this->createPharmacy($headers)->assertCreated();
+        $store = Store::where('owner_id', $owner->id)->first();
+
+        $this->postJson("/api/v1/admin/stores/{$store->id}/verification/review", [
+            'action' => 'reject',
+            'notes' => 'The licence photo is unreadable.',
+        ], $this->tokenFor($this->makeUser(['role' => 'admin'])))->assertOk();
+
+        $this->createPharmacy($headers)->assertCreated();
+
+        Mail::assertSent(
+            AdminAlertEmail::class,
+            fn ($mail) => str_contains($mail->subject, 'Pharmacy licence resubmitted')
+        );
+    }
+
+    /**
+     * The note has to match where the applicant actually is. Telling a reviewer
+     * an admin-created owner is "outside the dashboard" is false -- they are
+     * inside it with everything but their own shop page locked -- and a reviewer
+     * acting on a false description of the applicant's position is exactly what
+     * this alert exists to prevent.
+     */
+    public function test_the_alert_describes_where_the_applicant_actually_is(): void
+    {
+        Storage::fake('local');
+        Mail::fake();
+
+        $this->makeUser(['role' => 'admin']);
+
+        $this->createPharmacy($this->tokenFor($this->freshOwner()))->assertCreated();
+
+        Mail::assertSent(
+            AdminAlertEmail::class,
+            fn ($mail) => str_contains((string) $mail->note, 'dashboard except their own shop is locked')
+                && ! str_contains((string) $mail->note, 'outside the dashboard')
+        );
+    }
+
+    /**
+     * Best-effort, like every other admin alert: the licence is already saved
+     * and the applicant has been told it is with us, so a mail outage must not
+     * turn a successful application into a failed one.
+     */
+    public function test_a_mail_failure_does_not_fail_the_application(): void
+    {
+        Storage::fake('local');
+
+        $this->makeUser(['role' => 'admin']);
+
+        Mail::shouldReceive('to')->andThrow(new \RuntimeException('SMTP down'));
+
+        $owner = $this->freshOwner();
+        $this->createPharmacy($this->tokenFor($owner))->assertCreated();
+
+        $this->assertNotNull(
+            Store::where('owner_id', $owner->id)->first(),
+            'the pharmacy must survive a mail outage'
+        );
     }
 }

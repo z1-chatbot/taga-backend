@@ -254,6 +254,18 @@ class StoreApplicationController extends Controller
             return $store;
         });
 
+        // Put it in front of a reviewer. register() has always done this and
+        // this path never did, so the two ways of reaching the same queue
+        // behaved differently: a signed-in customer applying, and an
+        // admin-created owner setting their shop up in the dashboard, both
+        // landed silently. The applicant is told we will email them either way,
+        // and nothing was telling anybody there was a decision to make.
+        //
+        // Best-effort, exactly as register() treats it: a mail outage must not
+        // fail an application whose licence is already saved. PlatformAdmins
+        // logs and swallows a failed send.
+        \App\Services\AdminAlerts::pharmacyApplied($store->fresh(), resubmission: (bool) $existing);
+
         return response()->json([
             'success' => true,
             'message' => 'Thank you. Your pharmacy licence is with our team for review, and we will '

@@ -31,32 +31,63 @@ use App\Support\PlatformAdmins;
 class AdminAlerts
 {
     /**
-     * A pharmacy has applied to sell on the platform.
+     * A pharmacy is waiting on a licence decision.
      *
-     * Distinct from a licence submission by an existing store: this is a brand
-     * new account with nothing on the platform yet, sitting outside the
-     * dashboard until somebody approves it. Nothing announced it, so an
-     * applicant's wait was bounded only by how often the queue was opened.
+     * Fires for every route into the review queue, because from a reviewer's
+     * side they are one job. There are three, and only the first used to send
+     * anything:
+     *
+     *   · A brand new account applying from the storefront (/sell/register).
+     *   · An existing customer applying while signed in (/sell/apply).
+     *   · An owner an admin created, setting the shop up from inside the
+     *     dashboard — which posts to /sell/apply as well.
+     *
+     * The last two announced themselves to nobody. The applicant was told we
+     * would email them either way, and the only thing standing between them and
+     * that promise was somebody remembering to open the verification queue.
+     *
+     * The wording has to bend to the route, or it tells the reviewer something
+     * untrue. "They are outside the dashboard until this is approved" is right
+     * for an applicant off the storefront and wrong for an admin-created owner,
+     * who is already inside it with everything but their own shop page locked.
      */
-    public static function pharmacyApplied(Store $store): int
+    public static function pharmacyApplied(Store $store, bool $resubmission = false): int
     {
+        // An owner who already holds the role is inside the dashboard, gated,
+        // rather than shut out of it — see the store owner onboarding gates.
+        $inDashboard = $store->owner?->role === 'store_owner';
+
+        $note = $inDashboard
+            ? 'Their shop exists but cannot sell, and every page of their dashboard except their '
+                .'own shop is locked until this is approved.'
+            : 'They are outside the dashboard until this is approved, and nothing they list is '
+                .'purchasable, so the wait is visible to them as an empty shopfront.';
+
         return PlatformAdmins::notify(
             fn () => new AdminAlertEmail(
-                subject: "New pharmacy application: {$store->name}",
-                heading: 'A pharmacy has applied to join',
-                intro: "{$store->name} has registered and submitted a pharmacy licence for review.",
+                subject: $resubmission
+                    ? "Pharmacy licence resubmitted: {$store->name}"
+                    : "New pharmacy application: {$store->name}",
+                heading: $resubmission
+                    ? 'A pharmacy has resent its licence'
+                    : 'A pharmacy is waiting on a licence check',
+                intro: $resubmission
+                    ? "{$store->name} was turned down before and has submitted a new pharmacy licence."
+                    : "{$store->name} has submitted a pharmacy licence for review.",
                 rows: array_filter([
                     'Pharmacy' => e($store->name),
                     'Contact' => e($store->email ?: ($store->owner?->email ?? 'Not on file')),
                     'Location' => e(trim(($store->city ? $store->city.', ' : '').($store->state ?? ''), ', ')) ?: null,
-                    'Applied' => $store->created_at?->format('j F Y, g:ia'),
+                    // The submission, not the account: on a resubmission, and
+                    // for an owner an admin created weeks earlier, created_at is
+                    // not when this landed in the queue.
+                    'Submitted' => $store->updated_at?->format('j F Y, g:ia'),
                 ]),
                 actionUrl: AppUrl::admin('/store-verifications'),
                 actionLabel: 'Open the review queue',
-                note: 'They are outside the dashboard until this is approved, and nothing they '
-                    .'list is purchasable, so the wait is visible to them as an empty shopfront.',
+                note: $note,
             ),
-            'a new pharmacy application',
+            $resubmission ? 'a resubmitted pharmacy licence' : 'a new pharmacy application',
             ['store_id' => $store->id],
         );
     }
