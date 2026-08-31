@@ -287,6 +287,12 @@ Route::prefix('v1')->middleware('auth.token')->group(function () {
     Route::prefix('stores')->group(function () {
         // Store Management
         Route::get('/my-store', [StoreController::class, 'getMyStore']);
+        // The gate every store-owner page consults. Cheap on purpose, and it
+        // answers where /my-store 404s: an account can hold the store_owner
+        // role and own no store at all, and "no store yet" is a state the
+        // dashboard renders rather than an error. Declared before /my-store's
+        // sibling routes for readability only -- it is a distinct path.
+        Route::get('/my-store/state', [StoreController::class, 'myStoreState']);
         Route::put('/my-store', [StoreController::class, 'updateMyStore']);
         Route::put('/bank-details', [StoreController::class, 'updateBankDetails']);
         Route::post('/request-payout', [StoreController::class, 'requestPayout']);

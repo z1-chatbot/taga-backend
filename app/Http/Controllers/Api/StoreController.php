@@ -614,4 +614,88 @@ class StoreController extends Controller
             'data' => $store
         ]);
     }
+
+    /**
+     * Where a pharmacy account stands, for gating the dashboard.
+     *
+     * Every store-owner page consults this, so it is deliberately cheap: one
+     * row, no stats, no aggregates. getMyStore() answers a similar question but
+     * runs several aggregate queries over order items to build the shop
+     * summary, which is far too much to pay on every route change.
+     *
+     * It also answers where getMyStore() 404s. An account can hold the
+     * store_owner role and own no store at all -- an admin can create the
+     * account before the pharmacy exists -- and "no store yet" is a state the
+     * dashboard has to render, not an error.
+     *
+     * Two independent gates, matching Store::canSell():
+     *
+     *   1. Is there a store? Until there is, the only thing the owner can do is
+     *      create one.
+     *   2. Is its licence approved and current? A shop may exist, be theirs and
+     *      be editable while it is still not allowed to sell a thing.
+     *
+     * `stage` is the single value the UI switches on, so the two ends cannot
+     * drift into disagreeing about which overlay to show.
+     */
+    public function myStoreState(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user->role !== 'store_owner') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Store owners only.',
+            ], 403);
+        }
+
+        $store = Store::where('owner_id', $user->id)->first();
+
+        if (! $store) {
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'has_store' => false,
+                    'stage' => 'no_store',
+                    'can_sell' => false,
+                    'blocked_reason' => 'This account has no pharmacy yet.',
+                    'store' => null,
+                ],
+            ]);
+        }
+
+        // Expiry is its own stage. An approved licence that has lapsed is not
+        // the same problem as one that was never approved, and telling a
+        // pharmacist their licence is "under review" when it has simply run out
+        // sends them to wait for an email that is never coming.
+        $stage = match (true) {
+            $store->canSell() => 'active',
+            $store->verification_status === Store::VERIFICATION_APPROVED => 'expired',
+            default => $store->verification_status,
+        };
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'has_store' => true,
+                'stage' => $stage,
+                'can_sell' => $store->canSell(),
+                'blocked_reason' => $store->sellingBlockedReason(),
+                'store' => [
+                    'id' => $store->id,
+                    'name' => $store->name,
+                    'slug' => $store->slug,
+                    'status' => $store->status,
+                    'verification_status' => $store->verification_status,
+                    // The reason a rejected pharmacy was turned down: they
+                    // cannot fix an application they are not told the fault in.
+                    'verification_notes' => $store->verification_status === Store::VERIFICATION_REJECTED
+                        ? $store->verification_notes
+                        : null,
+                    'pharmacy_license_expiry' => $store->pharmacy_license_expiry?->toDateString(),
+                    'submitted_at' => $store->updated_at?->toIso8601String(),
+                ],
+            ],
+        ]);
+    }
 }
