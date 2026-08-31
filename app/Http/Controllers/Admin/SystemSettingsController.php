@@ -378,6 +378,49 @@ class SystemSettingsController extends Controller
      * Get public settings (for frontend use)
      */
     /**
+     * Turn the platform markup on or off.
+     *
+     * The key already existed and already governed pricing, but nothing could
+     * write it except the generic Settings editor — which offered a free-text
+     * box for a boolean, so an admin "turning it off" typed the word false into
+     * a field and had no way to tell whether it had taken. This is the switch
+     * that page should have had.
+     *
+     * setValue reactivates the row as well as writing the value, which matters:
+     * getValue only reads rows where is_active is true, so a setting that had
+     * been switched off with the Power control silently fell back to the
+     * default of ON no matter what its stored value said.
+     */
+    public function setDynamicPricing(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'enabled' => 'required|boolean',
+        ]);
+
+        SystemSetting::setValue(
+            SystemSetting::CATEGORY_GENERAL,
+            'enable_dynamic_pricing',
+            $validated['enabled'],
+            'Enable Dynamic Pricing',
+            'Allow platform to add markup to product prices',
+            SystemSetting::TYPE_BOOLEAN
+        );
+
+        // Read it back through the same helper the pricing itself uses, so the
+        // response states what the platform will now do rather than what was
+        // asked for.
+        $enabled = \App\Models\PricingConfiguration::dynamicPricingEnabled();
+
+        return response()->json([
+            'success' => true,
+            'message' => $enabled
+                ? 'Dynamic pricing is on. Category markups now apply to customer prices.'
+                : 'Dynamic pricing is off. Customers pay the pharmacy price with no markup.',
+            'data' => ['enable_dynamic_pricing' => $enabled],
+        ]);
+    }
+
+    /**
      * The settings the admin frontend reads on every page load.
      *
      * Narrower than it was: six keys that were served here drove nothing
@@ -398,7 +441,12 @@ class SystemSettingsController extends Controller
             // is actually created on. The old fallback of 15 disagreed with the
             // stored value and with the column default of 0.00.
             'default_commission_rate' => SystemSetting::defaultCommissionRate(),
-            'enable_dynamic_pricing' => (bool) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'enable_dynamic_pricing', true),
+            // getBool, not (bool). A switch saved from the Settings page comes
+            // back as the string "false", and (bool) "false" is TRUE in PHP —
+            // so the Pricing page reported dynamic pricing ON while the pricing
+            // itself, which reads the same key through
+            // PricingConfiguration::dynamicPricingEnabled(), had it OFF.
+            'enable_dynamic_pricing' => SystemSetting::getBool(SystemSetting::CATEGORY_GENERAL, 'enable_dynamic_pricing', true),
             'min_payout_amount' => (float) SystemSetting::getValue(SystemSetting::CATEGORY_GENERAL, 'min_payout_amount', 10000),
         ];
 

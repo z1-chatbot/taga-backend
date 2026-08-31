@@ -31,6 +31,12 @@ class PrescriptionController extends Controller
             'store_id' => 'nullable|exists:stores,id',
             'order_id' => 'nullable|exists:orders,id',
             'patient_name' => 'nullable|string|max:255',
+            // How the pharmacy reaches the patient, as opposed to the
+            // prescriber below. A prescription is often uploaded by a relative
+            // and may be uploaded by a guest with no account, so neither the
+            // account address nor the order address is reliably the patient's.
+            'patient_email' => 'nullable|email|max:255',
+            'patient_phone' => 'nullable|string|max:32',
             'doctor_name' => 'nullable|string|max:255',
             'doctor_license' => 'nullable|string|max:100',
             // Contact details for the prescriber, so a reviewing pharmacist can
@@ -45,6 +51,8 @@ class PrescriptionController extends Controller
             // The form labels these "Prescriber", so the validation errors have
             // to as well — "The doctor email field must be a valid email
             // address" points at a field the shopper cannot see by that name.
+            'patient_email' => "patient's email",
+            'patient_phone' => "patient's phone",
             'doctor_name' => 'prescriber',
             'doctor_license' => 'prescriber licence',
             'doctor_email' => "prescriber's email",
@@ -222,6 +230,8 @@ class PrescriptionController extends Controller
         if ($search = $request->input('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('patient_name', 'like', "%{$search}%")
+                    ->orWhere('patient_email', 'like', "%{$search}%")
+                    ->orWhere('patient_phone', 'like', "%{$search}%")
                     ->orWhere('doctor_name', 'like', "%{$search}%")
                     ->orWhere('doctor_email', 'like', "%{$search}%")
                     ->orWhere('doctor_phone', 'like', "%{$search}%")
@@ -507,6 +517,8 @@ class PrescriptionController extends Controller
             'file_size' => $prescription->file_size,
             'download_url' => "/api/v1/prescriptions/{$prescription->id}/download",
             'patient_name' => $prescription->patient_name,
+            'patient_email' => $prescription->patient_email,
+            'patient_phone' => $prescription->patient_phone,
             'doctor_name' => $prescription->doctor_name,
             'doctor_license' => $prescription->doctor_license,
             'doctor_email' => $prescription->doctor_email,

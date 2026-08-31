@@ -551,6 +551,14 @@ Route::prefix('v1/admin')->middleware(['auth.token', 'admin'])->group(function (
     // Pricing Configuration
     Route::prefix('pricing-configurations')->group(function () {
         Route::get('/', [PricingConfigurationController::class, 'index']);
+        // The master switch for the whole feature, before the /{id} wildcard
+        // below — registered after it, this URL matches as an update of a
+        // configuration whose id is the string "dynamic-pricing". It lives
+        // under this prefix rather than under /settings because it belongs to
+        // the screen an admin is on when they want it; the generic Settings
+        // editor offered only a free-text box for it, which is why turning it
+        // off there appeared to do nothing.
+        Route::put('/dynamic-pricing', [App\Http\Controllers\Admin\SystemSettingsController::class, 'setDynamicPricing']);
         Route::post('/', [PricingConfigurationController::class, 'store']);
         // Removed: PricingConfigurationController::show does not exist; the admin UI reads the index.
         Route::put('/{id}', [PricingConfigurationController::class, 'update']);

@@ -27,6 +27,8 @@ class Prescription extends Model
         'mime_type',
         'file_size',
         'patient_name',
+        'patient_email',
+        'patient_phone',
         'doctor_name',
         'doctor_license',
         'doctor_email',
