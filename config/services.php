@@ -35,6 +35,19 @@ return [
         ],
     ],
 
+    /*
+    | Google Sign-In.
+    |
+    | The client id is not a secret -- the storefront ships it in the bundle --
+    | but the backend needs its own copy because it is the *audience* every
+    | Google ID token is checked against. Without it App\Support\GoogleIdToken
+    | refuses every token, which is the correct failure: an unverifiable
+    | credential must never be treated as a login.
+    */
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+    ],
+
     'paystack' => [
         'public_key' => env('PAYSTACK_PUBLIC_KEY'),
         'secret_key' => env('PAYSTACK_SECRET_KEY'),

@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\Api\StoreApplicationController;
 use App\Mail\AdminAlertEmail;
 use App\Models\Product;
 use App\Models\Store;
+use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -413,5 +415,119 @@ class StoreOwnerOnboardingTest extends TestCase
             Store::where('owner_id', $owner->id)->first(),
             'the pharmacy must survive a mail outage'
         );
+    }
+
+    // ---- Google accounts do not become pharmacies --------------------------
+
+    /**
+     * The rule that keeps the two kinds of account apart.
+     *
+     * Google sign-in is offered to shoppers, who know that is what they are
+     * signing up as. A pharmacy registers on the Sell page with its own email
+     * and password, or is created by an administrator. Without this, a shopper's
+     * Google account could turn into a dashboard account reachable only through
+     * a provider the dashboard refuses -- and every question about how such an
+     * owner is meant to get in exists solely because of that crossover.
+     */
+    public function test_a_google_account_cannot_apply_to_sell(): void
+    {
+        Storage::fake('local');
+
+        $owner = $this->freshOwner();
+        $owner->update([
+            'auth_provider' => User::AUTH_GOOGLE,
+            'google_id' => 'google-'.uniqid(),
+            'password' => null,
+        ]);
+
+        $this->createPharmacy($this->tokenFor($owner))
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'google_account_cannot_sell');
+
+        $this->assertNull(
+            Store::where('owner_id', $owner->id)->first(),
+            'no pharmacy should have been created'
+        );
+    }
+
+    /**
+     * Refused at the application, not at approval. Telling somebody their
+     * account is unsuitable after a reviewer has read their licence is worse
+     * than telling them before they upload it.
+     */
+    public function test_the_refusal_says_to_register_with_an_email_and_password(): void
+    {
+        Storage::fake('local');
+
+        $owner = $this->freshOwner();
+        $owner->update([
+            'auth_provider' => User::AUTH_GOOGLE,
+            'google_id' => 'google-'.uniqid(),
+            'password' => null,
+        ]);
+
+        $message = $this->createPharmacy($this->tokenFor($owner))
+            ->assertStatus(422)
+            ->json('message');
+
+        $this->assertStringContainsString('email address and password', $message);
+    }
+
+    /**
+     * Belt and braces at the moment of promotion. Reaching it means a store was
+     * attached to a Google account by some route other than the application, and
+     * promoting it would build the very account the rule prevents.
+     */
+    public function test_approval_never_promotes_a_google_account(): void
+    {
+        Storage::fake('local');
+
+        // A customer, not freshOwner(): promotion is only observable on an
+        // account that does not already hold the role.
+        $owner = $this->makeUser(['role' => 'customer']);
+        $this->createPharmacy($this->tokenFor($owner))->assertCreated();
+
+        $store = Store::where('owner_id', $owner->id)->firstOrFail();
+
+        // Converted after the fact, which the application itself would refuse.
+        $owner->update([
+            'auth_provider' => User::AUTH_GOOGLE,
+            'google_id' => 'google-'.uniqid(),
+            'password' => null,
+        ]);
+
+        StoreApplicationController::grantDashboardAccess($store->fresh());
+
+        $fresh = $owner->fresh();
+
+        $this->assertSame('customer', $fresh->role, 'a Google account must not be promoted');
+        $this->assertNull($fresh->store_id);
+    }
+
+    /** The same call promotes an ordinary password account, as it always did. */
+    public function test_approval_still_promotes_a_password_account(): void
+    {
+        Storage::fake('local');
+
+        $owner = $this->makeUser(['role' => 'customer']);
+        $this->createPharmacy($this->tokenFor($owner))->assertCreated();
+
+        $store = Store::where('owner_id', $owner->id)->firstOrFail();
+
+        StoreApplicationController::grantDashboardAccess($store->fresh());
+
+        $this->assertSame('store_owner', $owner->fresh()->role);
+    }
+
+    /** A password account is unaffected: this is the ordinary path. */
+    public function test_a_password_account_applies_as_before(): void
+    {
+        Storage::fake('local');
+
+        $owner = $this->freshOwner();
+
+        $this->createPharmacy($this->tokenFor($owner))->assertCreated();
+
+        $this->assertNotNull(Store::where('owner_id', $owner->id)->first());
     }
 }

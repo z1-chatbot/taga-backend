@@ -140,6 +140,19 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
+        // An account created through Google has no password at all, so there is
+        // nothing to compare and Hash::check() would error on the null. Say so
+        // plainly rather than returning "incorrect credentials": the password
+        // they are typing is not wrong, it does not exist, and a shopper told
+        // their password is wrong will try to reset one they never had.
+        if ($user && $user->signsInWithGoogle()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This account signs in with Google. Use the "Continue with Google" button.',
+                'requires_google' => true,
+            ], 403);
+        }
+
         if (!$user || !Hash::check($request->password, $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
@@ -394,6 +407,16 @@ class AuthController extends Controller
             ]);
 
             $user = $request->user();
+
+            // Google accounts do not hold a password, and are not given one
+            // here: the Profile page hides this form for them, so reaching this
+            // point means the request did not come from that form.
+            if ($user->signsInWithGoogle()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This account signs in with Google, so it has no password to change.',
+                ], 400);
+            }
 
             // Verify current password
             if (!Hash::check($request->current_password, $user->password)) {

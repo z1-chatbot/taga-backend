@@ -30,6 +30,7 @@ class User extends Authenticatable
         'email_verification_token',
         'email_verification_sent_at',
         'google_id',
+        'auth_provider',
         'avatar',
     ];
 
@@ -44,6 +45,11 @@ class User extends Authenticatable
         'email_verification_token',
     ];
 
+    /** How an account proves who it is. See the auth_provider column. */
+    public const AUTH_PASSWORD = 'password';
+
+    public const AUTH_GOOGLE = 'google';
+
     /**
      * Get the attributes that should be cast.
      *
@@ -57,6 +63,23 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_active' => 'boolean',
         ];
+    }
+
+    /**
+     * Whether this account signs in through Google rather than with a password.
+     *
+     * Reads the stored provider, never the password column. An absent password
+     * happens to mean the same thing today, but it is an absence standing in for
+     * a fact: anything else that ever produces a passwordless account would
+     * start being told to sign in with Google.
+     *
+     * `auth_provider` is only ever set at creation. Linking Google to an account
+     * that already has a password does not change it — that account still has
+     * its password and still gets a password form.
+     */
+    public function signsInWithGoogle(): bool
+    {
+        return $this->auth_provider === self::AUTH_GOOGLE;
     }
 
     /**

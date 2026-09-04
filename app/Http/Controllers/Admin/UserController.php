@@ -559,10 +559,26 @@ class UserController extends Controller
     }
 
     /**
-     * Change user password
+     * Change your own password.
+     *
+     * Despite living on the admin controller this is the route every signed-in
+     * account uses -- see the "Password change for all users" group in
+     * routes/api.php, which is what actually answers POST /v1/change-password.
+     *
+     * The two front ends spell the confirmation field differently: the admin
+     * dashboard sends `new_password_confirmation`, which is what Laravel's
+     * `confirmed` rule looks for, and the storefront sends `confirm_password`.
+     * Only the first worked, so no customer had ever successfully changed their
+     * password -- the form answered "The new password field confirmation does
+     * not match" whatever they typed. Both spellings are accepted rather than
+     * changing one client and breaking the other.
      */
     public function changePassword(Request $request): JsonResponse
     {
+        if ($request->filled('confirm_password') && ! $request->filled('new_password_confirmation')) {
+            $request->merge(['new_password_confirmation' => $request->input('confirm_password')]);
+        }
+
         $validator = Validator::make($request->all(), [
             'current_password' => 'required|string',
             'new_password' => 'required|string|min:8|confirmed',
@@ -577,6 +593,17 @@ class UserController extends Controller
         }
 
         $user = $request->user();
+
+        // An account created through Google sign-in holds no password. It is not
+        // given one here: the Profile page hides this form for such an account,
+        // so a request reaching this point did not come from that form. Checked
+        // before Hash::check(), which errors on a null stored password.
+        if ($user->signsInWithGoogle()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This account signs in with Google, so it has no password to change.',
+            ], 400);
+        }
 
         // Verify current password
         if (!Hash::check($request->current_password, $user->password)) {

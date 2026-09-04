@@ -236,7 +236,11 @@ Route::prefix('v1')->middleware('auth.token')->group(function () {
     Route::get('/user', [AuthController::class, 'getProfile']);
     Route::put('/user', [AuthController::class, 'updateProfile']);
     Route::post('/logout', [AuthController::class, 'logout']);
-    Route::post('/change-password', [AuthController::class, 'changePassword']);
+    // No /change-password here. It was registered at this URI and again in the
+    // "Password change for all users" group below, and the later registration
+    // wins -- so this one never ran, while the two handlers validated different
+    // field names. A shadowed duplicate that silently loses is worse than no
+    // route: it is where you go to fix a bug you then cannot reproduce.
     
     // Note: Cart routes are public (guest + auth), no need for duplicate auth-only routes
     

@@ -186,6 +186,34 @@ class StoreApplicationController extends Controller
     public function apply(Request $request): JsonResponse
     {
         $user = $request->user();
+
+        /*
+         * A Google account cannot become a pharmacy.
+         *
+         * Refused here, at the application, rather than at approval: telling
+         * somebody their account is unsuitable after a reviewer has read their
+         * licence is a worse experience than telling them before they upload it.
+         *
+         * The rule keeps the two kinds of account cleanly apart. Google sign-in
+         * is offered to shoppers, who know that is what they are signing up as;
+         * a pharmacy registers on the Sell page with its own email and password,
+         * or is created by an administrator. Letting a shopper's Google account
+         * turn into a pharmacy would mean a dashboard account that can only be
+         * reached through a provider the dashboard does not accept, and every
+         * question about how such an owner is supposed to get in — a first
+         * password, a reset, a lockout — exists only because of that crossover.
+         * There is no crossover.
+         */
+        if ($user->signsInWithGoogle()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This account signs in with Google, and pharmacy accounts cannot. '
+                    .'Register your pharmacy with its own email address and password, and use that '
+                    .'to sign in to the dashboard.',
+                'code' => 'google_account_cannot_sell',
+            ], 422);
+        }
+
         $existing = $this->applicationFor($request);
 
         if ($existing && $existing->verification_status === Store::VERIFICATION_PENDING) {
@@ -342,6 +370,21 @@ class StoreApplicationController extends Controller
         $owner = $store->owner;
 
         if (! $owner || $owner->role === 'admin') {
+            return;
+        }
+
+        // apply() refuses a Google account long before this, so reaching here
+        // means a store was attached to one by some other route. Promoting it
+        // would build exactly the account the rule exists to prevent: a
+        // dashboard owner whose only credential is one the dashboard refuses.
+        // Loud, because it leaves an approved pharmacy whose owner cannot sign
+        // in, and somebody has to move them onto an email and password.
+        if ($owner->signsInWithGoogle()) {
+            \Log::error('Refused to promote a Google account to store owner', [
+                'store_id' => $store->id,
+                'owner_id' => $owner->id,
+            ]);
+
             return;
         }
 
