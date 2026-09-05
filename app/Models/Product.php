@@ -302,14 +302,39 @@ class Product extends Model
         return $this->effective_sale_price !== null;
     }
 
-    public function getAverageRatingAttribute()
-    {
-        return $this->reviews()->avg('rating') ?? 0;
-    }
-
+    /**
+     * The rating a shopper is shown, and the number of reviews behind it.
+     *
+     * These read the stored columns, which updateRating() maintains from
+     * APPROVED reviews only. They used to be accessors that recomputed
+     * `$this->reviews()->avg('rating')` on every read -- across every review,
+     * approved or not.
+     *
+     * That quietly cancelled the entire moderation step. A shopper who had
+     * bought anything could post five stars and see them on the listing
+     * immediately, before a reviewer had looked; a rejected review went on
+     * counting forever. It also threw away the work updateRating() had just
+     * done, since an accessor of the same name shadows its column, and cost two
+     * extra queries per product on every listing.
+     *
+     * `review_count` is kept as a separate name because the list endpoint has
+     * always called it that while the detail endpoint calls it `rating_count`;
+     * the storefront reads both.
+     */
     public function getReviewCountAttribute()
     {
-        return $this->reviews()->count();
+        return (int) $this->rating_count;
+    }
+
+    /**
+     * Only the reviews the public may see.
+     *
+     * Anything counting, averaging or ranking by reviews must go through this
+     * rather than reviews(), or it is counting submissions nobody has cleared.
+     */
+    public function approvedReviews()
+    {
+        return $this->hasMany(Review::class)->where('is_approved', true);
     }
 
     // Scopes

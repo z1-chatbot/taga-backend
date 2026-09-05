@@ -5,7 +5,11 @@ namespace App\Services;
 use App\Mail\AdminAlertEmail;
 use App\Mail\PayoutRequestedEmail;
 use App\Models\ConsultationRequest;
+use App\Models\Review;
 use App\Models\Store;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 use App\Support\AppUrl;
 use App\Support\PlatformAdmins;
 
@@ -116,6 +120,105 @@ class AdminAlerts
                 'requester_type' => $requesterType,
             ],
         );
+    }
+
+    /**
+     * Somebody has reviewed a product, and it is waiting to be cleared.
+     *
+     * Every review is held until a moderator approves it, and nothing announced
+     * one — so a review only went up if somebody happened to open the queue.
+     * A shopper who has taken the trouble to write about their medicine, and
+     * been told it will appear once checked, is owed better than that.
+     *
+     * Both sides are told, for different reasons. The platform moderates, so it
+     * gets the queue link. The pharmacy is the one being talked about and can
+     * neither approve nor delete it, so its message is a heads-up rather than a
+     * task — a one-star review of their dispensing is something they should hear
+     * about from us rather than discover.
+     *
+     * @return int  How many messages went out, across both audiences.
+     */
+    public static function reviewSubmitted(Review $review): int
+    {
+        $review->loadMissing(['user', 'product.store.owner']);
+
+        $product = $review->product;
+        $store = $product?->store;
+
+        // Trimmed, not sent whole: this is an unmoderated stranger's text
+        // arriving in staff inboxes, and the point of the message is that there
+        // is something to read in the dashboard, not to reproduce it.
+        $extract = Str::limit((string) $review->comment, 180);
+
+        $rows = array_filter([
+            'Product' => e($product?->name ?? 'Unknown product'),
+            'Pharmacy' => $store ? e($store->name) : 'Taga (no pharmacy)',
+            'Rating' => $review->rating.' out of 5',
+            'From' => e($review->user?->name ?? 'A customer'),
+            'Headline' => $review->title ? e($review->title) : null,
+            'Extract' => e($extract),
+        ]);
+
+        $sent = PlatformAdmins::notify(
+            fn () => new AdminAlertEmail(
+                subject: "Review awaiting approval: {$product?->name}",
+                heading: 'A review is waiting to be checked',
+                intro: ($review->user?->name ?? 'A customer').' has reviewed '
+                    .($product?->name ?? 'a product').' and it is held for approval.',
+                rows: $rows,
+                actionUrl: AppUrl::admin('/reviews'),
+                actionLabel: 'Open the review queue',
+                note: 'Nothing appears on the storefront until somebody approves it, and the '
+                    .'customer has been told it will appear once checked.',
+            ),
+            'a review awaiting approval',
+            ['review_id' => $review->id, 'product_id' => $product?->id],
+        );
+
+        return $sent + self::tellThePharmacy($review, $rows);
+    }
+
+    /**
+     * The pharmacy whose medicine was reviewed.
+     *
+     * Sent one at a time and swallowed on failure, like every other alert: a
+     * review is already saved by the time this runs, and a pharmacy with no
+     * owner on file or a bouncing address must not turn a successful submission
+     * into a failed request.
+     */
+    private static function tellThePharmacy(Review $review, array $rows): int
+    {
+        $store = $review->product?->store;
+        $recipient = $store?->owner?->email ?: $store?->email;
+
+        if (! $store || ! $recipient) {
+            // Not a fault. Products Taga sells itself have no pharmacy behind
+            // them, and the platform has already been told above.
+            return 0;
+        }
+
+        try {
+            Mail::to($recipient)->send(new AdminAlertEmail(
+                subject: "New review of {$review->product?->name}",
+                heading: 'One of your medicines has been reviewed',
+                intro: 'A customer who received this order has left a review. Our team checks '
+                    .'every review before it appears on the storefront.',
+                rows: $rows,
+                actionUrl: AppUrl::admin('/my-reviews'),
+                actionLabel: 'See your reviews',
+                note: 'You cannot edit or remove a review. If you believe this one is unfair or '
+                    .'reports a problem with a medicine, reply to this email and we will look.',
+            ));
+
+            return 1;
+        } catch (\Throwable $e) {
+            Log::error('Could not tell a pharmacy about a review: '.$e->getMessage(), [
+                'review_id' => $review->id,
+                'store_id' => $store->id,
+            ]);
+
+            return 0;
+        }
     }
 
     /**

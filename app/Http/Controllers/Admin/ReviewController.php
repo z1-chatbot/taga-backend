@@ -188,6 +188,11 @@ class ReviewController extends Controller
             'is_approved' => false
         ]);
 
+        // Taking a review down has to take its stars down with it. The model's
+        // saved hook does this now, but approve() has always called it here
+        // explicitly and the two should read the same way.
+        $review->product->updateRating();
+
         return response()->json([
             'success' => true,
             'message' => 'Review rejected successfully',
@@ -271,13 +276,22 @@ class ReviewController extends Controller
             'review_ids.*' => 'exists:reviews,id'
         ]);
 
-        $updated = $this->scopeReviewsToStore(Review::query(), $request)
-                        ->whereIn('id', $request->review_ids)
-                        ->update(['is_approved' => false]);
+        // Model by model, like bulkApprove. A query-builder update issues one
+        // statement and fires no model events, so the ratings of every product
+        // involved were left carrying stars from reviews this call had just
+        // hidden -- the bulk button and the single button disagreed.
+        $reviews = $this->scopeReviewsToStore(Review::query(), $request)
+            ->whereIn('id', $request->review_ids)
+            ->get();
+
+        foreach ($reviews as $review) {
+            $review->update(['is_approved' => false]);
+            $review->product->updateRating();
+        }
 
         return response()->json([
             'success' => true,
-            'message' => "{$updated} reviews rejected successfully"
+            'message' => count($reviews) . " reviews rejected successfully"
         ]);
     }
 
@@ -291,9 +305,25 @@ class ReviewController extends Controller
             'review_ids.*' => 'exists:reviews,id'
         ]);
 
-        $deleted = $this->scopeReviewsToStore(Review::query(), $request)
+        // Same reason as bulkReject: a mass delete fires no deleted event, so
+        // the products kept an average built partly from rows that no longer
+        // exist. The products are collected first because a deleted review can
+        // no longer tell us which product it belonged to.
+        $reviews = $this->scopeReviewsToStore(Review::query(), $request)
             ->whereIn('id', $request->review_ids)
-            ->delete();
+            ->get();
+
+        $products = $reviews->pluck('product')->filter()->unique('id');
+
+        foreach ($reviews as $review) {
+            $review->delete();
+        }
+
+        foreach ($products as $product) {
+            $product->updateRating();
+        }
+
+        $deleted = $reviews->count();
 
         return response()->json([
             'success' => true,

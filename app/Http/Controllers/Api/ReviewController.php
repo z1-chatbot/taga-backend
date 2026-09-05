@@ -94,6 +94,26 @@ class ReviewController extends Controller
             'is_approved' => false // Requires admin approval
         ]);
 
+        /*
+         * Tell somebody it is there.
+         *
+         * Nothing announced a review, so one only went up if an administrator
+         * happened to open the queue -- while the customer had been told it
+         * would appear once checked. Both the platform (who moderates) and the
+         * pharmacy (who is being talked about) are told.
+         *
+         * Best-effort, like every other alert on the platform: the review is
+         * saved and the shopper has been thanked, so a mail outage must not
+         * turn that into an error they would answer by writing it again.
+         */
+        try {
+            \App\Services\AdminAlerts::reviewSubmitted($review);
+        } catch (\Throwable $e) {
+            \Log::error('Could not announce a new review: '.$e->getMessage(), [
+                'review_id' => $review->id,
+            ]);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Review submitted successfully and is pending approval',

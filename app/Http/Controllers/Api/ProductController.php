@@ -146,7 +146,10 @@ class ProductController extends Controller
         // Top Rated filter (minimum rating)
         if ($request->has('min_rating') && $request->min_rating) {
             $minRating = (float) $request->min_rating;
-            $query->whereHas('reviews', function($q) use ($minRating) {
+            // approvedReviews, not reviews: filtering on submissions nobody
+            // has cleared lets a pending review pull a product into a
+            // "4 stars and up" search.
+            $query->whereHas('approvedReviews', function($q) use ($minRating) {
                 $q->havingRaw('AVG(rating) >= ?', [$minRating]);
             });
         }
@@ -177,7 +180,10 @@ class ProductController extends Controller
                 $query->orderBy('name', 'asc');
                 break;
             case 'rating':
-                $query->withAvg('reviews', 'rating')->orderBy('reviews_avg_rating', 'desc');
+                // Approved only. Ranking by every submission made "Best rated"
+                // something a single unmoderated five-star review could win.
+                $query->withAvg('approvedReviews', 'rating')
+                      ->orderBy('approved_reviews_avg_rating', 'desc');
                 break;
             case 'sales':
                 // Best Sellers - sort by number of orders
@@ -196,8 +202,8 @@ class ProductController extends Controller
                                    ->where('created_at', '>=', now()->subDays(30));
                     });
                 }])
-                ->withAvg('reviews', 'rating')
-                ->orderByRaw('(order_items_count * 2 + COALESCE(reviews_avg_rating, 0)) DESC');
+                ->withAvg('approvedReviews', 'rating')
+                ->orderByRaw('(order_items_count * 2 + COALESCE(approved_reviews_avg_rating, 0)) DESC');
                 break;
             default:
                 // Whitelisted: this used to pass the raw `sort_by` value straight
@@ -655,7 +661,7 @@ class ProductController extends Controller
             ]);
 
             // Load relationships for admin view
-            $products->load(['store', 'reviews']);
+            $products->load(['store', 'approvedReviews']);
             
             // Transform for admin view
             $transformedProducts = $products->getCollection()->map(function ($product) {
@@ -679,8 +685,10 @@ class ProductController extends Controller
                         'name' => $product->store->name,
                         'slug' => $product->store->slug,
                     ] : null,
-                    'reviews_count' => $product->reviews->count(),
-                    'average_rating' => $product->reviews->count() > 0 ? round($product->reviews->avg('rating'), 1) : 0,
+                    'reviews_count' => $product->approvedReviews->count(),
+                    'average_rating' => $product->approvedReviews->count() > 0
+                        ? round($product->approvedReviews->avg('rating'), 1)
+                        : 0,
                     // Pharmacy attributes
                     'generic_name' => $product->generic_name,
                     'brand_name' => $product->brand_name,
